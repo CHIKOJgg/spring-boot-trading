@@ -10,6 +10,7 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.stream.Collectors;
 
@@ -104,6 +105,19 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleTrading(TradingException ex) {
         return ResponseEntity.badRequest()
                 .body(ErrorResponse.of(400, "Bad request", ex.getMessage()));
+    }
+
+    /**
+     * BUG FIX: NoResourceFoundException (e.g. missing favicon.ico or any
+     * unknown static path) was falling through to the catch-all Exception handler
+     * below and being logged as ERROR with a full stack trace on every browser
+     * request.  It is simply a 404 — log at DEBUG and return cleanly.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResource(NoResourceFoundException ex) {
+        log.debug("Static resource not found: {}", ex.getResourcePath());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ErrorResponse.of(404, "Not found", ex.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

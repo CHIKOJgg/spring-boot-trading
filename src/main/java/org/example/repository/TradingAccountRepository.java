@@ -16,6 +16,10 @@ public interface TradingAccountRepository extends JpaRepository<TradingAccountEn
     Optional<TradingAccountEntity> findByAccountNumber(String accountNumber);
     boolean existsByAccountNumber(String accountNumber);
 
+    // BUG FIX: added existsByUserId so AuthService can check before provisioning
+    // a default account, preventing duplicate accounts on repeated calls.
+    boolean existsByUserId(Long userId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT t FROM TradingAccountEntity t WHERE t.id = :id")
     Optional<TradingAccountEntity> findByIdForUpdate(Long id);

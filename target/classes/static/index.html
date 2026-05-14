@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Platform</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --text:     #e6edf3;
+    --muted:    #7d8590;
+    --accent:   #388bfd;
+    --green:    #3fb950;
+    --red:      #f85149;
+    --yellow:   #d29922;
+    --radius:   8px;
+    --font:     'Segoe UI', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; min-height: 100vh; }
+
+  /* ---- Auth overlay ---- */
+  #auth-overlay {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .auth-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 36px 40px; width: 380px;
+  }
+  .auth-card h1 { font-size: 22px; margin-bottom: 6px; }
+  .auth-card p  { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+  .tab-row { display: flex; gap: 0; margin-bottom: 24px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .tab-btn { flex: 1; padding: 8px; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 14px; transition: all .15s; }
+  .tab-btn.active { background: var(--accent); color: #fff; }
+
+  /* ---- Layout ---- */
+  #app { display: none; height: 100vh; display: grid; grid-template-rows: 52px 1fr; }
+  .navbar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 20px; gap: 16px;
+  }
+  .navbar .logo { font-weight: 700; font-size: 16px; color: var(--accent); margin-right: auto; }
+  .nav-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 6px 12px; border-radius: var(--radius); font-size: 13px; transition: all .15s; }
+  .nav-btn:hover, .nav-btn.active { background: var(--border); color: var(--text); }
+  .nav-user { font-size: 13px; color: var(--muted); }
+  .badge { background: var(--red); color: #fff; border-radius: 9999px; font-size: 10px; padding: 1px 5px; margin-left: 4px; }
+
+  .main-content { overflow: hidden; display: grid; grid-template-columns: 1fr; }
+  .page { display: none; height: 100%; overflow-y: auto; padding: 20px; }
+  .page.active { display: block; }
+
+  /* ---- Cards ---- */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
+  .card-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 12px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+  /* ---- Forms ---- */
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  input, select { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 8px 10px; font-size: 14px; outline: none; transition: border .15s; }
+  input:focus, select:focus { border-color: var(--accent); }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: all .15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: .85; }
+  .btn-success { background: var(--green); color: #fff; }
+  .btn-success:hover { opacity: .85; }
+  .btn-danger  { background: var(--red); color: #fff; }
+  .btn-danger:hover { opacity: .85; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn-block { width: 100%; justify-content: center; margin-top: 4px; }
+
+  /* ---- Table ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid rgba(48,54,61,.4); }
+  tr:hover td { background: rgba(255,255,255,.02); }
+
+  /* ---- Order book ---- */
+  .ob-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 4px; font-size: 12px; font-variant-numeric: tabular-nums; position: relative; }
+  .ob-bar { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px; opacity: .12; pointer-events: none; }
+  .ob-ask .ob-bar { background: var(--red); }
+  .ob-bid .ob-bar { background: var(--green); }
+  .ob-price-ask { color: var(--red); font-weight: 600; min-width: 72px; }
+  .ob-price-bid { color: var(--green); font-weight: 600; min-width: 72px; }
+  .ob-qty   { color: var(--text); min-width: 60px; text-align: right; }
+  .ob-total { color: var(--muted); min-width: 70px; text-align: right; }
+  .ob-spread { text-align: center; color: var(--muted); font-size: 11px; padding: 4px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 2px 0; }
+
+  /* ---- Status pills ---- */
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 500; }
+  .pill-green  { background: rgba(63,185,80,.15);  color: var(--green); }
+  .pill-red    { background: rgba(248,81,73,.15);   color: var(--red); }
+  .pill-yellow { background: rgba(210,153,34,.15);  color: var(--yellow); }
+  .pill-blue   { background: rgba(56,139,253,.15);  color: var(--accent); }
+  .pill-muted  { background: rgba(125,133,144,.15); color: var(--muted); }
+
+  /* ---- Misc ---- */
+  .stat-val  { font-size: 24px; font-weight: 700; }
+  .stat-label{ font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .alert { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 12px; font-size: 13px; }
+  .alert-err  { background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.3); color: var(--red); }
+  .alert-ok   { background: rgba(63,185,80,.12);  border: 1px solid rgba(63,185,80,.3);  color: var(--green); }
+  .separator  { height: 1px; background: var(--border); margin: 16px 0; }
+  .text-green { color: var(--green); }
+  .text-red   { color: var(--red); }
+  .text-muted { color: var(--muted); }
+  .live-dot   { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{ opacity:1 } 50%{ opacity:.3 } }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .section-header h2 { font-size: 16px; font-weight: 600; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ AUTH ============================================================ -->
+<div id="auth-overlay">
+  <div class="auth-card">
+    <h1>⚡ Trading Platform</h1>
+    <p>Войдите или создайте учётную запись</p>
+    <div id="auth-alert"></div>
+    <div class="tab-row">
+      <button class="tab-btn active" onclick="switchAuthTab('login')">Войти</button>
+      <button class="tab-btn" onclick="switchAuthTab('register')">Регистрация</button>
+    </div>
+    <!-- Login -->
+    <div id="login-form">
+      <div class="form-group"><label>Логин</label><input id="l-user" placeholder="username"></div>
+      <div class="form-group"><label>Пароль</label><input id="l-pass" type="password" placeholder="••••••••"></div>
+      <button class="btn btn-primary btn-block" onclick="doLogin()">Войти</button>
+    </div>
+    <!-- Register -->
+    <div id="register-form" style="display:none">
+      <div class="form-group"><label>Логин</label><input id="r-user" placeholder="username"></div>
+      <div class="form-group"><label>Email</label><input id="r-email" type="email" placeholder="email@example.com"></div>
+      <div class="form-group"><label>Пароль (мин. 8 символов)</label><input id="r-pass" type="password" placeholder="••••••••"></div>
+      <div class="grid-2" style="gap:10px">
+        <div class="form-group"><label>Имя</label><input id="r-fn" placeholder="Иван"></div>
+        <div class="form-group"><label>Фамилия</label><input id="r-ln" placeholder="Иванов"></div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="doRegister()">Создать аккаунт</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ APP ============================================================ -->
+<div id="app" style="display:none">
+  <nav class="navbar">
+    <span class="logo">⚡ TradePlatform</span>
+    <button class="nav-btn active" onclick="showPage('dashboard')">Дашборд</button>
+    <button class="nav-btn" onclick="showPage('trading')">Торговля</button>
+    <button class="nav-btn" onclick="showPage('accounts')">Счета</button>
+    <button class="nav-btn" onclick="showPage('orders')">Заявки</button>
+    <button class="nav-btn" onclick="showPage('history')">История</button>
+    <button class="nav-btn" id="admin-nav" style="display:none" onclick="showPage('admin')">Админ</button>
+    <span class="nav-user" id="nav-user"></span>
+    <button class="btn btn-outline btn-sm" onclick="doLogout()">Выйти</button>
+  </nav>
+
+  <div class="main-content">
+
+    <!-- ===== DASHBOARD ===== -->
+    <div id="page-dashboard" class="page active">
+      <div class="grid-3" id="dash-stats"></div>
+      <div class="grid-2">
+        <div>
+          <div class="card">
+            <div class="card-title">Торговый стакан &nbsp;<span class="live-dot"></span></div>
+            <div style="margin-bottom:10px">
+              <select id="ob-ticker" onchange="loadOrderBook()" style="width:160px"></select>
+            </div>
+            <div id="ob-asks" style="display:flex;flex-direction:column-reverse;max-height:200px;overflow:hidden"></div>
+            <div class="ob-spread" id="ob-spread">—</div>
+            <div id="ob-bids" style="max-height:200px;overflow:hidden"></div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="card-title">Последние сделки &nbsp;<span class="live-dot"></span></div>
+            <div id="recent-trades-list" style="max-height:420px;overflow-y:auto">
+              <table><thead><tr><th>Тикер</th><th>Цена</th><th>Кол-во</th><th>Время</th></tr></thead>
+              <tbody id="recent-trades-body"></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== TRADING ===== -->
+    <div id="page-trading" class="page">
+      <div class="grid-2">
+        <div>
+          <div class="card">
+            <div class="card-title">Новая заявка</div>
+            <div id="order-alert"></div>
+            <div class="form-group">
+              <label>Инструмент</label>
+              <select id="o-ticker"></select>
+            </div>
+            <div class="form-group">
+              <label>Торговый счёт</label>
+              <select id="o-account"></select>
+            </div>
+            <div class="tab-row" style="margin-bottom:14px">
+              <button class="tab-btn active" id="buy-tab"  onclick="setOrderSide('BUY')">🟢 Купить</button>
+              <button class="tab-btn"        id="sell-tab" onclick="setOrderSide('SELL')">🔴 Продать</button>
+            </div>
+            <div class="grid-2" style="gap:10px">
+              <div class="form-group"><label>Цена</label><input id="o-price" type="number" step="0.01" placeholder="0.00"></div>
+              <div class="form-group"><label>Количество</label><input id="o-qty" type="number" placeholder="0"></div>
+            </div>
+            <div class="form-group">
+              <label>Срок действия</label>
+              <select id="o-tif"><option value="GTC">GTC — до отмены</option><option value="IOC">IOC</option><option value="FOK">FOK</option></select>
+            </div>
+            <div id="o-total-preview" class="text-muted" style="font-size:12px;margin-bottom:12px"></div>
+            <button id="place-btn" class="btn btn-success btn-block" onclick="placeOrder()">Выставить заявку на покупку</button>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="card-title">Стакан &nbsp;<span class="live-dot"></span></div>
+            <div id="t-ob-asks" style="display:flex;flex-direction:column-reverse;max-height:240px;overflow:hidden"></div>
+            <div class="ob-spread" id="t-ob-spread">—</div>
+            <div id="t-ob-bids" style="max-height:240px;overflow:hidden"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Активные заявки</div>
+        <table><thead><tr><th>ID</th><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Остаток/Всего</th><th>Статус</th><th>Время</th><th></th></tr></thead>
+        <tbody id="active-orders-body"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ===== ACCOUNTS ===== -->
+    <div id="page-accounts" class="page">
+      <div class="grid-2">
+        <div>
+          <div class="section-header">
+            <h2>Банковские счета</h2>
+            <button class="btn btn-primary btn-sm" onclick="openBankModal()">+ Открыть счёт</button>
+          </div>
+          <div id="bank-accounts-list"></div>
+        </div>
+        <div>
+          <div class="section-header">
+            <h2>Торговые счета</h2>
+            <button class="btn btn-primary btn-sm" onclick="openTradingModal()">+ Открыть счёт</button>
+          </div>
+          <div id="trading-accounts-list"></div>
+        </div>
+      </div>
+      <!-- Operations -->
+      <div class="card" id="ops-card" style="display:none">
+        <div class="card-title" id="ops-title">Операции</div>
+        <div id="ops-form"></div>
+      </div>
+    </div>
+
+    <!-- ===== ORDERS ===== -->
+    <div id="page-orders" class="page">
+      <div class="section-header">
+        <h2>История заявок</h2>
+        <button class="btn btn-outline btn-sm" onclick="loadOrderHistory()">↻ Обновить</button>
+      </div>
+      <div class="card">
+        <table><thead><tr><th>ID</th><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Объём</th><th>Исполнено</th><th>Статус</th><th>Время</th></tr></thead>
+        <tbody id="order-history-body"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ===== HISTORY ===== -->
+    <div id="page-history" class="page">
+      <div class="section-header"><h2>История сделок</h2></div>
+      <div class="card">
+        <table><thead><tr><th>ID сделки</th><th>Тикер</th><th>Цена</th><th>Кол-во</th><th>Сумма</th><th>Покупатель</th><th>Продавец</th><th>Время</th></tr></thead>
+        <tbody id="trade-history-body"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ===== ADMIN ===== -->
+    <div id="page-admin" class="page">
+      <div class="section-header"><h2>Панель администратора</h2></div>
+      <div class="card">
+        <div class="card-title">Журнал аудита</div>
+        <table><thead><tr><th>Пользователь</th><th>Действие</th><th>Сущность</th><th>ID</th><th>Результат</th><th>Время</th></tr></thead>
+        <tbody id="audit-body"></tbody></table>
+      </div>
+    </div>
+
+  </div><!-- main-content -->
+</div><!-- app -->
+
+<!-- ============================================================ SCRIPT ============================================================ -->
+<script>
+const API = '';
+let token = null;
+let currentUser = null;
+let stompClient = null;
+let orderSide = 'BUY';
+let instruments = [];
+let bankAccounts = [];
+let tradingAccounts = [];
+
+// -------------------------------------------------------
+//  Auth helpers
+// -------------------------------------------------------
+const $ = id => document.getElementById(id);
+const authHeader = () => ({ 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' });
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: authHeader(),
+    ...opts
+  });
+  if (res.status === 401) { doLogout(); return null; }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.message || 'Ошибка запроса');
+  return data;
+}
+
+function showAuthAlert(msg, ok = false) {
+  $('auth-alert').innerHTML = `<div class="alert ${ok ? 'alert-ok' : 'alert-err'}">${msg}</div>`;
+}
+
+function switchAuthTab(tab) {
+  $('login-form').style.display    = tab === 'login'    ? '' : 'none';
+  $('register-form').style.display = tab === 'register' ? '' : 'none';
+  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === (tab === 'login' ? 0 : 1)));
+}
+
+async function doLogin() {
+  try {
+    const r = await fetch(API + '/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('l-user').value, password: $('l-pass').value })
+    });
+    const d = await r.json();
+    if (!r.ok) return showAuthAlert(d.message || 'Неверные данные');
+    onLoginSuccess(d);
+  } catch(e) { showAuthAlert(e.message); }
+}
+
+async function doRegister() {
+  try {
+    const r = await fetch(API + '/api/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: $('r-user').value, email: $('r-email').value,
+        password: $('r-pass').value, firstName: $('r-fn').value, lastName: $('r-ln').value
+      })
+    });
+    const d = await r.json();
+    if (!r.ok) return showAuthAlert(d.message || 'Ошибка регистрации');
+    onLoginSuccess(d);
+  } catch(e) { showAuthAlert(e.message); }
+}
+
+function onLoginSuccess(data) {
+  token = data.accessToken;
+  currentUser = data.user;
+  $('auth-overlay').style.display = 'none';
+  $('app').style.display = 'grid';
+  $('nav-user').textContent = '👤 ' + currentUser.username;
+  if (currentUser.roles?.includes('ROLE_ADMIN')) $('admin-nav').style.display = '';
+  initApp();
+}
+
+function doLogout() {
+  apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  token = null; currentUser = null;
+  if (stompClient) stompClient.disconnect();
+  $('auth-overlay').style.display = 'flex';
+  $('app').style.display = 'none';
+}
+
+// -------------------------------------------------------
+//  Navigation
+// -------------------------------------------------------
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  $('page-' + name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'trading') { loadActiveOrders(); loadTradingOrderBook(); }
+  if (name === 'accounts') { loadAccounts(); }
+  if (name === 'orders')   { loadOrderHistory(); }
+  if (name === 'history')  { loadTradeHistory(); }
+  if (name === 'admin')    { loadAuditLogs(); }
+}
+
+// -------------------------------------------------------
+//  Init
+// -------------------------------------------------------
+async function initApp() {
+  instruments = await apiFetch('/api/market/instruments') || [];
+  const tickers = instruments.map(i => i.ticker);
+
+  // populate selects
+  ['ob-ticker', 'o-ticker'].forEach(id => {
+    $(id).innerHTML = tickers.map(t => `<option value="${t}">${t}</option>`).join('');
+  });
+
+  await loadAccounts();
+  await loadDashboard();
+  connectWebSocket();
+  loadOrderBook();
+
+  // price/qty preview
+  ['o-price', 'o-qty'].forEach(id =>
+    $(id).addEventListener('input', updateOrderPreview));
+}
+
+// -------------------------------------------------------
+//  Dashboard
+// -------------------------------------------------------
+async function loadDashboard() {
+  // stats
+  const [bankList, tradingList] = await Promise.all([
+    apiFetch('/api/accounts/bank'),
+    apiFetch('/api/accounts/trading')
+  ]);
+
+  const totalBank    = (bankList    || []).reduce((s, a) => s + parseFloat(a.balance || 0), 0);
+  const totalTrading = (tradingList || []).reduce((s, a) => s + parseFloat(a.cashBalance || 0), 0);
+  const activeCount  = (await apiFetch('/api/orders/active') || []).length;
+
+  $('dash-stats').innerHTML = `
+    <div class="card"><div class="stat-val">${fmt(totalBank)} ₽</div><div class="stat-label">Баланс банк. счетов</div></div>
+    <div class="card"><div class="stat-val">${fmt(totalTrading)} ₽</div><div class="stat-label">Баланс торг. счетов</div></div>
+    <div class="card"><div class="stat-val">${activeCount}</div><div class="stat-label">Активных заявок</div></div>
+  `;
+
+  // recent trades for first ticker
+  if (instruments.length) loadRecentTrades(instruments[0].ticker);
+}
+
+async function loadRecentTrades(ticker) {
+  const trades = await apiFetch(`/api/market/trades/${ticker}?limit=30`) || [];
+  $('recent-trades-body').innerHTML = trades.map(t => `
+    <tr>
+      <td>${t.ticker}</td>
+      <td class="${t.buyOrderId < t.sellOrderId ? 'text-green' : 'text-red'}">${fmt(t.price)}</td>
+      <td>${t.quantity}</td>
+      <td class="text-muted">${fmtTime(t.tradedAt)}</td>
+    </tr>`).join('');
+}
+
+// -------------------------------------------------------
+//  Order Book
+// -------------------------------------------------------
+async function loadOrderBook() {
+  const ticker = $('ob-ticker').value;
+  await renderOrderBook(ticker, 'ob-asks', 'ob-bids', 'ob-spread');
+}
+
+async function loadTradingOrderBook() {
+  const ticker = $('o-ticker').value;
+  await renderOrderBook(ticker, 't-ob-asks', 't-ob-bids', 't-ob-spread');
+}
+
+async function renderOrderBook(ticker, asksId, bidsId, spreadId) {
+  const book = await apiFetch(`/api/market/orderbook/${ticker}?depth=15`);
+  if (!book) return;
+
+  const maxVol = Math.max(
+    ...(book.asks || []).map(l => l.totalQty),
+    ...(book.bids || []).map(l => l.totalQty), 1
+  );
+
+  $(asksId).innerHTML = (book.asks || []).slice(0, 12).reverse().map(l => `
+    <div class="ob-row ob-ask">
+      <div class="ob-bar" style="width:${(l.totalQty/maxVol*100).toFixed(1)}%"></div>
+      <span class="ob-price-ask">${fmtPrice(l.price)}</span>
+      <span class="ob-qty">${l.totalQty}</span>
+      <span class="ob-total">${fmtK(l.price * l.totalQty)}</span>
+    </div>`).join('');
+
+  $(bidsId).innerHTML = (book.bids || []).slice(0, 12).map(l => `
+    <div class="ob-row ob-bid">
+      <div class="ob-bar" style="width:${(l.totalQty/maxVol*100).toFixed(1)}%"></div>
+      <span class="ob-price-bid">${fmtPrice(l.price)}</span>
+      <span class="ob-qty">${l.totalQty}</span>
+      <span class="ob-total">${fmtK(l.price * l.totalQty)}</span>
+    </div>`).join('');
+
+  $(spreadId).textContent = book.spread != null
+    ? `Спред: ${fmtPrice(book.spread)}`
+    : 'Нет встречных заявок';
+}
+
+// -------------------------------------------------------
+//  Order placement
+// -------------------------------------------------------
+function setOrderSide(side) {
+  orderSide = side;
+  $('buy-tab').classList.toggle('active', side === 'BUY');
+  $('sell-tab').classList.toggle('active', side === 'SELL');
+  $('place-btn').className = `btn btn-block ${side === 'BUY' ? 'btn-success' : 'btn-danger'}`;
+  $('place-btn').textContent = side === 'BUY' ? 'Выставить заявку на покупку' : 'Выставить заявку на продажу';
+  updateOrderPreview();
+}
+
+function updateOrderPreview() {
+  const p = parseFloat($('o-price').value) || 0;
+  const q = parseInt($('o-qty').value)     || 0;
+  $('o-total-preview').textContent = p && q
+    ? `Итого: ${fmt(p * q)} ₽`
+    : '';
+}
+
+async function placeOrder() {
+  $('order-alert').innerHTML = '';
+  const ticker    = $('o-ticker').value;
+  const accountId = parseInt($('o-account').value);
+  const price     = parseFloat($('o-price').value);
+  const quantity  = parseInt($('o-qty').value);
+  const tif       = $('o-tif').value;
+
+  if (!accountId || !price || !quantity)
+    return showOrderAlert('Заполните все поля', false);
+
+  try {
+    const order = await apiFetch('/api/orders', {
+      method: 'POST',
+      body: JSON.stringify({ ticker, tradingAccountId: accountId, side: orderSide, price, quantity, timeInForce: tif })
+    });
+    showOrderAlert(`Заявка ${order.id.substring(0,8)}… принята. Статус: ${order.status}`, true);
+    loadActiveOrders();
+    loadTradingOrderBook();
+    $('o-price').value = '';
+    $('o-qty').value = '';
+  } catch(e) { showOrderAlert(e.message, false); }
+}
+
+function showOrderAlert(msg, ok) {
+  $('order-alert').innerHTML = `<div class="alert ${ok ? 'alert-ok' : 'alert-err'}">${msg}</div>`;
+}
+
+// -------------------------------------------------------
+//  Active Orders
+// -------------------------------------------------------
+async function loadActiveOrders() {
+  const orders = await apiFetch('/api/orders/active') || [];
+  $('active-orders-body').innerHTML = orders.length === 0
+    ? '<tr><td colspan="8" class="text-muted" style="text-align:center;padding:20px">Нет активных заявок</td></tr>'
+    : orders.map(o => `
+      <tr>
+        <td class="text-muted">${o.id.substring(0,8)}…</td>
+        <td><b>${o.ticker}</b></td>
+        <td class="${o.side === 'BUY' ? 'text-green' : 'text-red'}">${o.side}</td>
+        <td>${fmtPrice(o.price)}</td>
+        <td>${o.remainingQty} / ${o.quantity}</td>
+        <td>${statusPill(o.status)}</td>
+        <td class="text-muted">${fmtTime(o.createdAt)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="cancelOrder('${o.id}')">✕</button></td>
+      </tr>`).join('');
+}
+
+async function cancelOrder(orderId) {
+  if (!confirm('Отменить заявку?')) return;
+  try {
+    await apiFetch(`/api/orders/${orderId}`, { method: 'DELETE' });
+    loadActiveOrders();
+    loadTradingOrderBook();
+  } catch(e) { alert(e.message); }
+}
+
+// -------------------------------------------------------
+//  Order / Trade history
+// -------------------------------------------------------
+async function loadOrderHistory() {
+  const data = await apiFetch('/api/orders/history?page=0&size=50&sort=createdAt,desc');
+  const orders = data?.content || [];
+  $('order-history-body').innerHTML = orders.map(o => `
+    <tr>
+      <td class="text-muted">${o.id.substring(0,8)}…</td>
+      <td><b>${o.ticker}</b></td>
+      <td class="${o.side === 'BUY' ? 'text-green' : 'text-red'}">${o.side}</td>
+      <td>${fmtPrice(o.price)}</td>
+      <td>${o.quantity}</td>
+      <td>${o.quantity - o.remainingQty}</td>
+      <td>${statusPill(o.status)}</td>
+      <td class="text-muted">${fmtTime(o.createdAt)}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="text-muted" style="text-align:center;padding:20px">Нет заявок</td></tr>';
+}
+
+async function loadTradeHistory() {
+  const data = await apiFetch('/api/orders/trades?page=0&size=50&sort=tradedAt,desc');
+  const trades = data?.content || [];
+  $('trade-history-body').innerHTML = trades.map(t => `
+    <tr>
+      <td class="text-muted">${t.id.substring(0,8)}…</td>
+      <td><b>${t.ticker}</b></td>
+      <td>${fmtPrice(t.price)}</td>
+      <td>${t.quantity}</td>
+      <td>${fmt(t.totalValue)} ₽</td>
+      <td class="text-green">${t.buyerUsername}</td>
+      <td class="text-red">${t.sellerUsername}</td>
+      <td class="text-muted">${fmtTime(t.tradedAt)}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="text-muted" style="text-align:center;padding:20px">Нет сделок</td></tr>';
+}
+
+// -------------------------------------------------------
+//  Accounts
+// -------------------------------------------------------
+async function loadAccounts() {
+  bankAccounts    = await apiFetch('/api/accounts/bank')    || [];
+  tradingAccounts = await apiFetch('/api/accounts/trading') || [];
+
+  $('bank-accounts-list').innerHTML = bankAccounts.map(a => `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-weight:600">${a.accountNumber}</span>
+        <span class="pill ${a.status === 'ACTIVE' ? 'pill-green' : 'pill-muted'}">${a.status}</span>
+      </div>
+      <div class="stat-val">${fmt(a.balance)} ${a.currency}</div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-success btn-sm" onclick="showDepositForm(${a.id})">↓ Пополнить</button>
+        <button class="btn btn-outline btn-sm"  onclick="showWithdrawForm(${a.id})">↑ Вывести</button>
+        <button class="btn btn-outline btn-sm"  onclick="showTransferForm(${a.id})">⇄ Перевод</button>
+        <button class="btn btn-outline btn-sm"  onclick="loadStatement(${a.id})">📋 Выписка</button>
+      </div>
+    </div>`).join('') || '<div class="text-muted">Нет банковских счетов</div>';
+
+  $('trading-accounts-list').innerHTML = tradingAccounts.map(a => `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-weight:600">${a.accountNumber}</span>
+        <span class="pill ${a.status === 'ACTIVE' ? 'pill-green' : 'pill-muted'}">${a.status}</span>
+      </div>
+      <div class="stat-val">${fmt(a.cashBalance)} ${a.currency}</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px">
+        Заморожено: ${fmt(a.frozenBalance)} | Доступно: ${fmt(a.availableBalance)}
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="showFundForm(${a.id})">💰 Пополнить</button>
+        <button class="btn btn-outline btn-sm" onclick="loadPositions(${a.id})">📊 Позиции</button>
+      </div>
+    </div>`).join('') || '<div class="text-muted">Нет торговых счетов</div>';
+
+  // update o-account select
+  $('o-account').innerHTML = tradingAccounts
+    .filter(a => a.status === 'ACTIVE')
+    .map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(a.availableBalance)} ₽)</option>`)
+    .join('') || '<option value="">— Нет торговых счетов —</option>';
+}
+
+function openBankModal() {
+  showOpsCard('Открыть банковский счёт', `
+    <div class="form-group"><label>Валюта</label>
+      <select id="nb-currency"><option>RUB</option><option>USD</option><option>EUR</option></select>
+    </div>
+    <button class="btn btn-primary" onclick="createBankAccount()">Открыть</button>
+  `);
+}
+async function createBankAccount() {
+  try {
+    await apiFetch('/api/accounts/bank', { method: 'POST', body: JSON.stringify({ currency: $('nb-currency').value }) });
+    hideOpsCard(); loadAccounts();
+  } catch(e) { alert(e.message); }
+}
+
+function openTradingModal() {
+  showOpsCard('Открыть торговый счёт', `
+    <div class="form-group"><label>Валюта</label>
+      <select id="nt-currency"><option>RUB</option></select>
+    </div>
+    <button class="btn btn-primary" onclick="createTradingAccount()">Открыть</button>
+  `);
+}
+async function createTradingAccount() {
+  try {
+    await apiFetch('/api/accounts/trading', { method: 'POST', body: JSON.stringify({ currency: $('nt-currency').value }) });
+    hideOpsCard(); loadAccounts();
+  } catch(e) { alert(e.message); }
+}
+
+function showDepositForm(id) {
+  showOpsCard('Пополнение счёта', `
+    <div class="form-group"><label>Сумма</label><input id="dep-amt" type="number" min="0.01" step="0.01" placeholder="0.00"></div>
+    <div class="form-group"><label>Описание</label><input id="dep-desc" placeholder="необязательно"></div>
+    <button class="btn btn-success" onclick="doDeposit(${id})">Пополнить</button>
+  `);
+}
+async function doDeposit(id) {
+  try {
+    await apiFetch('/api/accounts/bank/deposit', { method: 'POST',
+      body: JSON.stringify({ bankAccountId: id, amount: parseFloat($('dep-amt').value), description: $('dep-desc').value }) });
+    hideOpsCard(); loadAccounts(); loadDashboard();
+  } catch(e) { alert(e.message); }
+}
+
+function showWithdrawForm(id) {
+  showOpsCard('Снятие средств', `
+    <div class="form-group"><label>Сумма</label><input id="wd-amt" type="number" min="0.01" step="0.01"></div>
+    <button class="btn btn-danger" onclick="doWithdraw(${id})">Снять</button>
+  `);
+}
+async function doWithdraw(id) {
+  try {
+    await apiFetch('/api/accounts/bank/withdraw', { method: 'POST',
+      body: JSON.stringify({ bankAccountId: id, amount: parseFloat($('wd-amt').value) }) });
+    hideOpsCard(); loadAccounts(); loadDashboard();
+  } catch(e) { alert(e.message); }
+}
+
+function showTransferForm(fromId) {
+  const opts = bankAccounts.filter(a => a.id !== fromId)
+    .map(a => `<option value="${a.id}">${a.accountNumber}</option>`).join('');
+  showOpsCard('Перевод средств', `
+    <div class="form-group"><label>Счёт назначения</label><select id="tr-to">${opts}</select></div>
+    <div class="form-group"><label>Сумма</label><input id="tr-amt" type="number" min="0.01" step="0.01"></div>
+    <button class="btn btn-primary" onclick="doTransfer(${fromId})">Перевести</button>
+  `);
+}
+async function doTransfer(fromId) {
+  try {
+    await apiFetch('/api/accounts/bank/transfer', { method: 'POST',
+      body: JSON.stringify({ fromAccountId: fromId, toAccountId: parseInt($('tr-to').value), amount: parseFloat($('tr-amt').value) }) });
+    hideOpsCard(); loadAccounts();
+  } catch(e) { alert(e.message); }
+}
+
+function showFundForm(tradingId) {
+  const opts = bankAccounts.filter(a => a.status === 'ACTIVE')
+    .map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(a.balance)} ₽)</option>`).join('');
+  showOpsCard('Пополнение торгового счёта', `
+    <div class="form-group"><label>Банковский счёт</label><select id="fund-bank">${opts}</select></div>
+    <div class="form-group"><label>Сумма</label><input id="fund-amt" type="number" min="0.01" step="0.01"></div>
+    <button class="btn btn-primary" onclick="doFund(${tradingId})">Пополнить</button>
+  `);
+}
+async function doFund(tradingId) {
+  try {
+    await apiFetch('/api/accounts/trading/fund', { method: 'POST',
+      body: JSON.stringify({ bankAccountId: parseInt($('fund-bank').value), tradingAccountId: tradingId, amount: parseFloat($('fund-amt').value) }) });
+    hideOpsCard(); loadAccounts(); loadDashboard();
+  } catch(e) { alert(e.message); }
+}
+
+async function loadStatement(accountId) {
+  const ops = await apiFetch(`/api/accounts/bank/${accountId}/statement`) || [];
+  showOpsCard('Выписка по счёту', `
+    <table>
+      <thead><tr><th>Тип</th><th>Сумма</th><th>Описание</th><th>Дата</th></tr></thead>
+      <tbody>${ops.map(op => `
+        <tr>
+          <td>${op.operationType}</td>
+          <td class="${op.operationType === 'DEPOSIT' || op.operationType === 'TRANSFER_IN' ? 'text-green' : 'text-red'}">${fmt(op.amount)} ${op.currency}</td>
+          <td class="text-muted">${op.description || '—'}</td>
+          <td class="text-muted">${fmtTime(op.createdAt)}</td>
+        </tr>`).join('') || '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">Нет операций</td></tr>'}</tbody>
+    </table>
+    <button class="btn btn-outline btn-sm" style="margin-top:10px" onclick="hideOpsCard()">Закрыть</button>
+  `);
+}
+
+async function loadPositions(accountId) {
+  const positions = await apiFetch(`/api/orders/positions/${accountId}`) || [];
+  showOpsCard('Позиции', `
+    <table>
+      <thead><tr><th>Тикер</th><th>Количество</th><th>Заморожено</th><th>Средняя цена</th></tr></thead>
+      <tbody>${positions.map(p => `
+        <tr>
+          <td><b>${p.ticker}</b></td>
+          <td>${p.quantity}</td>
+          <td class="text-muted">${p.frozenQuantity}</td>
+          <td>${p.avgCost ? fmtPrice(p.avgCost) + ' ₽' : '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">Нет позиций</td></tr>'}</tbody>
+    </table>
+    <button class="btn btn-outline btn-sm" style="margin-top:10px" onclick="hideOpsCard()">Закрыть</button>
+  `);
+}
+
+function showOpsCard(title, html) {
+  $('ops-title').textContent = title;
+  $('ops-form').innerHTML = html;
+  $('ops-card').style.display = '';
+  $('ops-card').scrollIntoView({ behavior: 'smooth' });
+}
+function hideOpsCard() { $('ops-card').style.display = 'none'; }
+
+// -------------------------------------------------------
+//  Admin
+// -------------------------------------------------------
+async function loadAuditLogs() {
+  const data = await apiFetch('/api/admin/audit?page=0&size=50&sort=createdAt,desc');
+  const logs = data?.content || [];
+  $('audit-body').innerHTML = logs.map(l => `
+    <tr>
+      <td>${l.username}</td>
+      <td>${l.action}</td>
+      <td class="text-muted">${l.entityType || '—'}</td>
+      <td class="text-muted">${l.entityId || '—'}</td>
+      <td>${l.result === 'SUCCESS' ? '<span class="pill pill-green">SUCCESS</span>' : '<span class="pill pill-red">FAILURE</span>'}</td>
+      <td class="text-muted">${fmtTime(l.createdAt)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:20px">Нет записей</td></tr>';
+}
+
+// -------------------------------------------------------
+//  WebSocket
+// -------------------------------------------------------
+function connectWebSocket() {
+  try {
+    const sock = new SockJS('/ws');
+    stompClient = Stomp.over(sock);
+    stompClient.debug = null;
+    stompClient.connect({}, () => {
+      // subscribe to first instrument's order book
+      if (instruments.length) {
+        subscribeOrderBook(instruments[0].ticker);
+        subscribeTrades(instruments[0].ticker);
+      }
+      // personal notifications
+      stompClient.subscribe('/user/queue/notifications', msg => {
+        const n = JSON.parse(msg.body);
+        showToast(n.title, n.message);
+      });
+    }, () => setTimeout(connectWebSocket, 5000));
+  } catch(e) { /* ws not available in dev */ }
+}
+
+function subscribeOrderBook(ticker) {
+  if (!stompClient) return;
+  stompClient.subscribe(`/topic/orderbook/${ticker}`, msg => {
+    const book = JSON.parse(msg.body);
+    renderOrderBookFromData(book, 'ob-asks', 'ob-bids', 'ob-spread');
+    renderOrderBookFromData(book, 't-ob-asks', 't-ob-bids', 't-ob-spread');
+  });
+}
+
+function subscribeTrades(ticker) {
+  if (!stompClient) return;
+  stompClient.subscribe(`/topic/trades/${ticker}`, msg => {
+    const t = JSON.parse(msg.body);
+    const tbody = $('recent-trades-body');
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${t.ticker}</td>
+      <td class="text-green">${fmtPrice(t.price)}</td>
+      <td>${t.quantity}</td>
+      <td class="text-muted">${fmtTime(t.tradedAt)}</td>`;
+    row.style.background = 'rgba(63,185,80,.08)';
+    setTimeout(() => row.style.background = '', 1500);
+    tbody.prepend(row);
+    if (tbody.children.length > 30) tbody.lastChild.remove();
+  });
+}
+
+function renderOrderBookFromData(book, asksId, bidsId, spreadId) {
+  const el = $(asksId); if (!el) return;
+  const maxVol = Math.max(...(book.asks||[]).map(l=>l.totalQty), ...(book.bids||[]).map(l=>l.totalQty), 1);
+  $(asksId).innerHTML = (book.asks||[]).slice(0,12).reverse().map(l=>`
+    <div class="ob-row ob-ask">
+      <div class="ob-bar" style="width:${(l.totalQty/maxVol*100).toFixed(1)}%"></div>
+      <span class="ob-price-ask">${fmtPrice(l.price)}</span>
+      <span class="ob-qty">${l.totalQty}</span>
+      <span class="ob-total">${fmtK(l.price*l.totalQty)}</span>
+    </div>`).join('');
+  $(bidsId).innerHTML = (book.bids||[]).slice(0,12).map(l=>`
+    <div class="ob-row ob-bid">
+      <div class="ob-bar" style="width:${(l.totalQty/maxVol*100).toFixed(1)}%"></div>
+      <span class="ob-price-bid">${fmtPrice(l.price)}</span>
+      <span class="ob-qty">${l.totalQty}</span>
+      <span class="ob-total">${fmtK(l.price*l.totalQty)}</span>
+    </div>`).join('');
+  $(spreadId).textContent = book.spread!=null ? `Спред: ${fmtPrice(book.spread)}` : 'Нет встречных заявок';
+}
+
+// -------------------------------------------------------
+//  Toast
+// -------------------------------------------------------
+function showToast(title, msg) {
+  const t = document.createElement('div');
+  t.style.cssText = `position:fixed;bottom:20px;right:20px;background:#1f2937;border:1px solid #374151;
+    border-radius:8px;padding:12px 16px;max-width:300px;z-index:999;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.4)`;
+  t.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${title}</div><div style="color:#9ca3af">${msg}</div>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
+// -------------------------------------------------------
+//  Formatters
+// -------------------------------------------------------
+function fmt(v)      { return parseFloat(v||0).toLocaleString('ru-RU', {minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtPrice(v) { return parseFloat(v||0).toLocaleString('ru-RU', {minimumFractionDigits:2,maximumFractionDigits:4}); }
+function fmtK(v)     {
+  const n = parseFloat(v||0);
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return n.toFixed(0);
+}
+function fmtTime(s) {
+  if (!s) return '—';
+  return new Date(s).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+function statusPill(s) {
+  const map = { PENDING:'pill-blue', PARTIALLY_FILLED:'pill-yellow', FILLED:'pill-green', CANCELLED:'pill-muted', REJECTED:'pill-red' };
+  return `<span class="pill ${map[s]||'pill-muted'}">${s}</span>`;
+}
+
+// kick off ticker change listeners
+document.addEventListener('DOMContentLoaded', () => {
+  const obTicker = $('ob-ticker');
+  if (obTicker) obTicker.addEventListener('change', () => {
+    subscribeOrderBook(obTicker.value);
+    subscribeTrades(obTicker.value);
+    loadRecentTrades(obTicker.value);
+  });
+  const oTicker = $('o-ticker');
+  if (oTicker) oTicker.addEventListener('change', loadTradingOrderBook);
+});
+</script>
+</body>
+</html>

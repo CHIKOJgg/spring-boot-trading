@@ -15,9 +15,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -26,17 +25,19 @@ public class AuthService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final TradingAccountRepository tradingAccountRepository;
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
     private final PasswordEncoder passwordEncoder;
     private final AuditService auditService;
 
-    // BUG FIX #8: Refresh token expiry was hardcoded as 604800 seconds (7 days),
-    // ignoring the jwt.refresh-expiration property entirely.
-    // The property is in milliseconds, so we divide by 1000 to get seconds.
     @Value("${jwt.refresh-expiration}")
     private long refreshTokenExpiryMs;
+
+    // -------------------------------------------------------
+    //  Login
+    // -------------------------------------------------------
 
     @Transactional
     public AuthResponse login(LoginRequest request) {
@@ -57,6 +58,10 @@ public class AuthService {
         return AuthResponse.of(accessToken, refreshToken, toUserResponse(user));
     }
 
+    // -------------------------------------------------------
+    //  Register
+    // -------------------------------------------------------
+
     @Transactional
     public AuthResponse register(RegisterRequest request) {
         if (userRepository.existsByUsername(request.username()))
@@ -75,7 +80,7 @@ public class AuthService {
         user.getRoles().add(traderRole);
         user = userRepository.save(user);
 
-        // create client profile
+        // Build client profile
         ClientProfileEntity profile = ClientProfileEntity.builder()
                 .user(user)
                 .firstName(request.firstName())
@@ -83,7 +88,12 @@ public class AuthService {
                 .createdAt(LocalDateTime.now())
                 .build();
         user.setProfile(profile);
-        userRepository.save(user);
+        user = userRepository.save(user);
+
+        // BUG FIX: new users had no trading account after registration, so the
+        // portfolio dashboard was empty and placing orders failed immediately.
+        // Automatically provision a default RUB trading account on every signup.
+        provisionDefaultTradingAccount(user);
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(request.username());
         String accessToken  = jwtService.generateAccessToken(userDetails);
@@ -92,6 +102,10 @@ public class AuthService {
         auditService.logSuccess(user.getUsername(), "REGISTER", "USER", user.getId().toString());
         return AuthResponse.of(accessToken, refreshToken, toUserResponse(user));
     }
+
+    // -------------------------------------------------------
+    //  Refresh token
+    // -------------------------------------------------------
 
     @Transactional
     public AuthResponse refresh(RefreshTokenRequest request) {
@@ -113,6 +127,10 @@ public class AuthService {
 
         return AuthResponse.of(newAccess, newRefresh, toUserResponse(user));
     }
+
+    // -------------------------------------------------------
+    //  Logout / password change
+    // -------------------------------------------------------
 
     @Transactional
     public void logout(String username) {
@@ -137,10 +155,36 @@ public class AuthService {
     }
 
     // -------------------------------------------------------
+    //  Helpers
+    // -------------------------------------------------------
+
+    /**
+     * Provision a funded RUB trading account for a newly registered user
+     * so they can start trading immediately without extra steps.
+     */
+    private void provisionDefaultTradingAccount(UserEntity user) {
+        boolean alreadyHasAccount = tradingAccountRepository.existsByUserId(user.getId());
+        if (alreadyHasAccount) return;
+
+        String accountNumber = "ACC-" + user.getId() + "-" +
+                System.currentTimeMillis() % 100000;
+
+        TradingAccountEntity account = TradingAccountEntity.builder()
+                .user(user)
+                .accountNumber(accountNumber)
+                .currency("RUB")
+                .cashBalance(BigDecimal.valueOf(1_000_000))   // 1 000 000 RUB demo funds
+                .frozenBalance(BigDecimal.ZERO)
+                .status("ACTIVE")
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+
+        tradingAccountRepository.save(account);
+    }
 
     private String persistRefreshToken(UserEntity user, UserDetails userDetails) {
         String rawToken = jwtService.generateRefreshToken(userDetails);
-        // BUG FIX #8: use injected property (in ms) converted to seconds
         long expirySeconds = refreshTokenExpiryMs / 1000;
         RefreshTokenEntity rt = RefreshTokenEntity.builder()
                 .user(user)
