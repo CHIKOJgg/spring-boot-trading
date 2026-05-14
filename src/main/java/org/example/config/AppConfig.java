@@ -1,8 +1,9 @@
 package org.example.config;
 
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.example.domain.service.MatchingEngine;
 import org.springframework.cache.annotation.EnableCaching;
@@ -26,7 +27,30 @@ import java.util.concurrent.Executor;
 public class AppConfig {
 
     // -------------------------------------------------------
-    //  Jackson ObjectMapper shared by all Redis serializers
+    //  PRIMARY ObjectMapper — used by Spring MVC for REST I/O
+    //
+    //  ROOT CAUSE OF ALL "undefined" FIELDS AND BigDecimal ERRORS:
+    //  The previous @Primary ObjectMapper had activateDefaultTyping(NON_FINAL)
+    //  enabled. Spring MVC auto-wires the @Primary ObjectMapper for serializing
+    //  REST responses and deserializing request bodies.
+    //
+    //  With NON_FINAL typing, every non-final class (including response DTOs,
+    //  Collections, LocalDateTime) gets wrapped in a JSON array:
+    //    ["org.example.dto.response.ApiResponse$InstrumentResponse", {...}]
+    //  instead of plain:
+    //    {"id": 1, "ticker": "SBER", ...}
+    //
+    //  The frontend JavaScript received these arrays and could not parse fields,
+    //  so every field rendered as "undefined".
+    //
+    //  For BigDecimal: when the typed mapper is used to deserialize request
+    //  bodies, it expects the client to send ["java.math.BigDecimal", 100]
+    //  instead of just 100, causing all deposit / fund operations to throw
+    //  a 4xx deserialization error.
+    //
+    //  FIX: The @Primary (Spring MVC) ObjectMapper must have NO type info.
+    //  A SEPARATE private mapper with type info is used exclusively inside
+    //  the Redis serializer — it is never registered as a Spring bean.
     // -------------------------------------------------------
 
     @Bean
@@ -35,7 +59,23 @@ public class AppConfig {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        // Store class type info so polymorphic deserialization works
+        mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        // NO activateDefaultTyping here — Spring MVC uses this for REST JSON
+        return mapper;
+    }
+
+    // -------------------------------------------------------
+    //  Private Redis-only ObjectMapper (NOT a Spring bean)
+    //  Type info is needed here so Redis can reconstruct the
+    //  correct concrete class on cache reads.  This mapper is
+    //  never injected into Spring MVC or Jackson's HTTP converters.
+    // -------------------------------------------------------
+
+    private ObjectMapper redisObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         mapper.activateDefaultTyping(
                 mapper.getPolymorphicTypeValidator(),
                 ObjectMapper.DefaultTyping.NON_FINAL,
@@ -45,7 +85,7 @@ public class AppConfig {
     }
 
     // -------------------------------------------------------
-    //  RedisTemplate  (for manual RedisTemplate.opsForValue calls)
+    //  RedisTemplate  (for manual opsForValue / opsForHash calls)
     // -------------------------------------------------------
 
     @Bean
@@ -53,7 +93,7 @@ public class AppConfig {
         RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(factory);
         Jackson2JsonRedisSerializer<Object> serializer =
-                new Jackson2JsonRedisSerializer<>(objectMapper(), Object.class);
+                new Jackson2JsonRedisSerializer<>(redisObjectMapper(), Object.class);
         template.setKeySerializer(new StringRedisSerializer());
         template.setHashKeySerializer(new StringRedisSerializer());
         template.setValueSerializer(serializer);
@@ -63,34 +103,21 @@ public class AppConfig {
     }
 
     // -------------------------------------------------------
-    //  RedisCacheManager — CRITICAL FIX
-    //
-    //  Spring Boot's auto-configured RedisCacheManager uses
-    //  JdkSerializationRedisSerializer by default.  DTOs like
-    //  InstrumentResponse do NOT implement Serializable, so every
-    //  @Cacheable write threw:
-    //    NotSerializableException: ApiResponse$InstrumentResponse
-    //  and the /api/market/instruments endpoint returned 500.
-    //
-    //  The fix is to define an explicit RedisCacheManager that uses
-    //  the Jackson2JsonRedisSerializer instead.  Spring Boot backs
-    //  off its auto-config when we provide our own bean.
+    //  RedisCacheManager  (used by @Cacheable / @CacheEvict)
     // -------------------------------------------------------
 
     @Bean
     public RedisCacheManager cacheManager(RedisConnectionFactory factory) {
         Jackson2JsonRedisSerializer<Object> serializer =
-                new Jackson2JsonRedisSerializer<>(objectMapper(), Object.class);
+                new Jackson2JsonRedisSerializer<>(redisObjectMapper(), Object.class);
 
         RedisCacheConfiguration config = RedisCacheConfiguration
                 .defaultCacheConfig()
                 .entryTtl(Duration.ofMinutes(10))
-                .serializeKeysWith(
-                        RedisSerializationContext.SerializationPair
-                                .fromSerializer(new StringRedisSerializer()))
-                .serializeValuesWith(
-                        RedisSerializationContext.SerializationPair
-                                .fromSerializer(serializer))
+                .serializeKeysWith(RedisSerializationContext.SerializationPair
+                        .fromSerializer(new StringRedisSerializer()))
+                .serializeValuesWith(RedisSerializationContext.SerializationPair
+                        .fromSerializer(serializer))
                 .disableCachingNullValues();
 
         return RedisCacheManager.builder(factory)
@@ -100,14 +127,6 @@ public class AppConfig {
 
     // -------------------------------------------------------
     //  Primary TaskExecutor for @Async
-    //
-    //  WebSocket creates three executor beans named
-    //  clientInboundChannelExecutor, clientOutboundChannelExecutor,
-    //  and brokerChannelExecutor.  Without a bean named "taskExecutor"
-    //  Spring's @Async infrastructure can't pick one and logs:
-    //    "More than one TaskExecutor bean found within the context,
-    //     and none is named 'taskExecutor'."
-    //  As a result @Async methods fall back to synchronous execution.
     // -------------------------------------------------------
 
     @Bean(name = "taskExecutor")
@@ -125,7 +144,7 @@ public class AppConfig {
     }
 
     // -------------------------------------------------------
-    //  Matching Engine — singleton bean
+    //  Matching Engine singleton
     // -------------------------------------------------------
 
     @Bean
