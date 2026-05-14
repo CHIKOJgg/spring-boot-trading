@@ -1,0 +1,31 @@
+### JetBrains IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+java_error_in_idea_*.log
+
+### Maven Build Tool ###
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.next
+pom.xml.versionsBackup
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+# Optional: Ignore Maven Wrapper if you prefer developers to use local Maven
+# .mvn/wrapper/maven-wrapper.jar
+
+### Spring Boot ###
+*.log
+*.gz
+log/
+logs/
+.spring-boot-devtools-restart.txt
+
+### Operating System Files ###
+.DS_Store
+Thumbs.db
