@@ -2,7 +2,6 @@ package org.example.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.example.domain.service.MatchingEngine;
@@ -27,73 +26,31 @@ import java.util.concurrent.Executor;
 public class AppConfig {
 
     // -------------------------------------------------------
-    //  PRIMARY ObjectMapper — used by Spring MVC for REST I/O
-    //
-    //  ROOT CAUSE OF ALL "undefined" FIELDS AND BigDecimal ERRORS:
-    //  The previous @Primary ObjectMapper had activateDefaultTyping(NON_FINAL)
-    //  enabled. Spring MVC auto-wires the @Primary ObjectMapper for serializing
-    //  REST responses and deserializing request bodies.
-    //
-    //  With NON_FINAL typing, every non-final class (including response DTOs,
-    //  Collections, LocalDateTime) gets wrapped in a JSON array:
-    //    ["org.example.dto.response.ApiResponse$InstrumentResponse", {...}]
-    //  instead of plain:
-    //    {"id": 1, "ticker": "SBER", ...}
-    //
-    //  The frontend JavaScript received these arrays and could not parse fields,
-    //  so every field rendered as "undefined".
-    //
-    //  For BigDecimal: when the typed mapper is used to deserialize request
-    //  bodies, it expects the client to send ["java.math.BigDecimal", 100]
-    //  instead of just 100, causing all deposit / fund operations to throw
-    //  a 4xx deserialization error.
-    //
-    //  FIX: The @Primary (Spring MVC) ObjectMapper must have NO type info.
-    //  A SEPARATE private mapper with type info is used exclusively inside
-    //  the Redis serializer — it is never registered as a Spring bean.
+    //  PRIMARY ObjectMapper — used by Spring MVC for all REST I/O
+    //  NO type info: clean JSON arrays and objects for the browser.
     // -------------------------------------------------------
 
     @Bean
     @Primary
     public ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-        // NO activateDefaultTyping here — Spring MVC uses this for REST JSON
-        return mapper;
+        return new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
     // -------------------------------------------------------
-    //  Private Redis-only ObjectMapper (NOT a Spring bean)
-    //  Type info is needed here so Redis can reconstruct the
-    //  correct concrete class on cache reads.  This mapper is
-    //  never injected into Spring MVC or Jackson's HTTP converters.
-    // -------------------------------------------------------
-
-    private ObjectMapper redisObjectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-        mapper.activateDefaultTyping(
-                mapper.getPolymorphicTypeValidator(),
-                ObjectMapper.DefaultTyping.NON_FINAL,
-                JsonTypeInfo.As.PROPERTY
-        );
-        return mapper;
-    }
-
-    // -------------------------------------------------------
-    //  RedisTemplate  (for manual opsForValue / opsForHash calls)
+    //  RedisTemplate — for manual opsForValue / pub-sub calls
+    //  Uses GenericJackson2JsonRedisSerializer which adds @class
+    //  type info only for polymorphic types that need it.
     // -------------------------------------------------------
 
     @Bean
     public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory factory) {
         RedisTemplate<String, Object> template = new RedisTemplate<>();
         template.setConnectionFactory(factory);
-        Jackson2JsonRedisSerializer<Object> serializer =
-                new Jackson2JsonRedisSerializer<>(redisObjectMapper(), Object.class);
+
+        GenericJackson2JsonRedisSerializer serializer = redisSerializer();
         template.setKeySerializer(new StringRedisSerializer());
         template.setHashKeySerializer(new StringRedisSerializer());
         template.setValueSerializer(serializer);
@@ -103,13 +60,19 @@ public class AppConfig {
     }
 
     // -------------------------------------------------------
-    //  RedisCacheManager  (used by @Cacheable / @CacheEvict)
+    //  RedisCacheManager — used by @Cacheable / @CacheEvict
+    //
+    //  FIX: switched from Jackson2JsonRedisSerializer<Object> with
+    //  activateDefaultTyping to GenericJackson2JsonRedisSerializer.
+    //  GenericJackson2JsonRedisSerializer is designed specifically for
+    //  Spring Cache: it writes @class info only where needed and reads
+    //  back the correct concrete type without conflicting with the
+    //  @Primary ObjectMapper used by Spring MVC.
     // -------------------------------------------------------
 
     @Bean
     public RedisCacheManager cacheManager(RedisConnectionFactory factory) {
-        Jackson2JsonRedisSerializer<Object> serializer =
-                new Jackson2JsonRedisSerializer<>(redisObjectMapper(), Object.class);
+        GenericJackson2JsonRedisSerializer serializer = redisSerializer();
 
         RedisCacheConfiguration config = RedisCacheConfiguration
                 .defaultCacheConfig()
@@ -123,6 +86,17 @@ public class AppConfig {
         return RedisCacheManager.builder(factory)
                 .cacheDefaults(config)
                 .build();
+    }
+
+    /** Shared Redis value serializer — one instance, consistent format */
+    private GenericJackson2JsonRedisSerializer redisSerializer() {
+        ObjectMapper redisMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        // GenericJackson2JsonRedisSerializer activates its own safe default typing
+        // internally on the provided mapper — this is the correct, designed-for-purpose API.
+        return new GenericJackson2JsonRedisSerializer(redisMapper);
     }
 
     // -------------------------------------------------------

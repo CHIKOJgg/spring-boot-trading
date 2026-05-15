@@ -293,10 +293,41 @@
     <!-- ===== ADMIN ===== -->
     <div id="page-admin" class="page">
       <div class="section-header"><h2>Панель администратора</h2></div>
+
+      <!-- User Management -->
+      <div class="card">
+        <div class="card-title">Управление пользователями</div>
+        <table>
+          <thead><tr>
+            <th>ID</th><th>Логин</th><th>Email</th><th>Роль</th>
+            <th>Статус</th><th>Блокировка</th><th>Действия</th>
+          </tr></thead>
+          <tbody id="admin-users-body"></tbody>
+        </table>
+      </div>
+
+      <!-- All Active Orders -->
+      <div class="card">
+        <div class="card-title">Все активные заявки</div>
+        <table>
+          <thead><tr>
+            <th>ID</th><th>Тикер</th><th>Сторона</th><th>Цена</th>
+            <th>Кол-во</th><th>Остаток</th><th>Статус</th><th>Время</th>
+          </tr></thead>
+          <tbody id="admin-orders-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Audit Journal -->
       <div class="card">
         <div class="card-title">Журнал аудита</div>
-        <table><thead><tr><th>Пользователь</th><th>Действие</th><th>Сущность</th><th>ID</th><th>Результат</th><th>Время</th></tr></thead>
-        <tbody id="audit-body"></tbody></table>
+        <table>
+          <thead><tr>
+            <th>Пользователь</th><th>Действие</th><th>Сущность</th>
+            <th>ID</th><th>Результат</th><th>Время</th>
+          </tr></thead>
+          <tbody id="audit-body"></tbody>
+        </table>
       </div>
     </div>
 
@@ -398,7 +429,7 @@ function showPage(name) {
   if (name === 'accounts') { loadAccounts(); }
   if (name === 'orders')   { loadOrderHistory(); }
   if (name === 'history')  { loadTradeHistory(); }
-  if (name === 'admin')    { loadAuditLogs(); }
+  if (name === 'admin')    { loadAdminUsers(); loadAdminOrders(); loadAuditLogs(); }
 }
 
 // -------------------------------------------------------
@@ -796,6 +827,53 @@ function hideOpsCard() { $('ops-card').style.display = 'none'; }
 // -------------------------------------------------------
 //  Admin
 // -------------------------------------------------------
+async function loadAdminUsers() {
+  const data = await apiFetch('/api/admin/users?page=0&size=50&sort=createdAt,desc');
+  const users = data?.content || [];
+  $('admin-users-body').innerHTML = users.map(u => `
+    <tr>
+      <td class="text-muted">${u.id}</td>
+      <td><b>${u.username}</b></td>
+      <td class="text-muted">${u.email}</td>
+      <td>${(u.roles||[]).join(', ')}</td>
+      <td>${u.isActive ? '<span class="pill pill-green">Активен</span>' : '<span class="pill pill-red">Неактивен</span>'}</td>
+      <td>${u.isLocked ? '<span class="pill pill-red">Заблокирован</span>' : '<span class="pill pill-green">Свободен</span>'}</td>
+      <td style="white-space:nowrap">
+        ${u.isLocked
+          ? `<button class="btn btn-sm" onclick="adminAction(${u.id},'unlock')">Разблокировать</button>`
+          : `<button class="btn btn-sm btn-danger" onclick="adminAction(${u.id},'lock')">Заблокировать</button>`}
+        ${u.isActive
+          ? `<button class="btn btn-sm btn-danger" onclick="adminAction(${u.id},'deactivate')" style="margin-left:4px">Деактив.</button>`
+          : `<button class="btn btn-sm" onclick="adminAction(${u.id},'activate')" style="margin-left:4px">Активир.</button>`}
+      </td>
+    </tr>`).join('') || '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:20px">Нет пользователей</td></tr>';
+}
+
+async function adminAction(userId, action) {
+  try {
+    await apiFetch(`/api/admin/users/${userId}/${action}`, { method: 'PUT' });
+    showToast('Готово', `Действие ${action} выполнено`);
+    loadAdminUsers();
+    loadAuditLogs();
+  } catch(e) { showToast('Ошибка', e.message); }
+}
+
+async function loadAdminOrders() {
+  const data = await apiFetch('/api/admin/orders?page=0&size=50&sort=createdAt,desc');
+  const orders = data?.content || [];
+  $('admin-orders-body').innerHTML = orders.map(o => `
+    <tr>
+      <td class="text-muted" style="font-size:11px">${(o.id||'').substring(0,8)}…</td>
+      <td><b>${o.ticker}</b></td>
+      <td class="${o.side==='BUY'?'text-green':'text-red'}">${o.side}</td>
+      <td>${fmt(o.price)}</td>
+      <td>${o.quantity}</td>
+      <td>${o.remainingQty}</td>
+      <td>${o.status}</td>
+      <td class="text-muted">${fmtTime(o.createdAt)}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="text-muted" style="text-align:center;padding:20px">Нет активных заявок</td></tr>';
+}
+
 async function loadAuditLogs() {
   const data = await apiFetch('/api/admin/audit?page=0&size=50&sort=createdAt,desc');
   const logs = data?.content || [];

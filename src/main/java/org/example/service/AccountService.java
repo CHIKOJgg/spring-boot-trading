@@ -43,6 +43,7 @@ public class AccountService {
         return toBankResponse(account);
     }
 
+    @Transactional(readOnly = true)
     public List<BankAccountResponse> getBankAccounts(String username) {
         UserEntity user = findUser(username);
         return bankAccountRepo.findByUserId(user.getId()).stream().map(this::toBankResponse).toList();
@@ -133,6 +134,7 @@ public class AccountService {
                 from.getId() + "->" + to.getId());
     }
 
+    @Transactional(readOnly = true)
     public List<CashOperationResponse> getAccountStatement(Long accountId, String username) {
         BankAccountEntity account = bankAccountRepo.findById(accountId)
                 .orElseThrow(() -> new AccountNotFoundException("Account not found: " + accountId));
@@ -159,6 +161,7 @@ public class AccountService {
         return toTradingResponse(account);
     }
 
+    @Transactional(readOnly = true)
     public List<TradingAccountResponse> getTradingAccounts(String username) {
         UserEntity user = findUser(username);
         return tradingAccountRepo.findByUserId(user.getId()).stream().map(this::toTradingResponse).toList();
