@@ -64,6 +64,37 @@ class MatchingEngineTest {
     }
 
     @Test
+    @DisplayName("IOC order executes available liquidity and does not rest remainder")
+    void iocOrder_doesNotRestRemainder() {
+        Order sell = order("seller", Side.SELL, "100", 30);
+        Order buy = order("buyer", Side.BUY, "100", 50, "IOC");
+
+        engine.placeLimitOrder(sell);
+        List<TradeResult> trades = engine.placeLimitOrder(buy);
+
+        assertThat(trades).hasSize(1);
+        assertThat(trades.get(0).quantity()).isEqualTo(30);
+        assertThat(buy.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(buy.getQuantity()).isEqualTo(20);
+        assertThat(engine.getOrCreateBook("SBER").getBestBid()).isNull();
+    }
+
+    @Test
+    @DisplayName("FOK order cancels without trading when full fill is impossible")
+    void fokOrder_requiresFullFill() {
+        Order sell = order("seller", Side.SELL, "100", 30);
+        Order buy = order("buyer", Side.BUY, "100", 50, "FOK");
+
+        engine.placeLimitOrder(sell);
+        List<TradeResult> trades = engine.placeLimitOrder(buy);
+
+        assertThat(trades).isEmpty();
+        assertThat(buy.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(buy.getQuantity()).isEqualTo(50);
+        assertThat(engine.getOrCreateBook("SBER").getBestAsk()).isNotNull();
+    }
+
+    @Test
     @DisplayName("SELL partially fills against multiple BID levels")
     void partialFill_sellAcrossMultipleBidLevels() {
         engine.placeLimitOrder(order("b1", Side.BUY, "102", 20));
@@ -137,6 +168,29 @@ class MatchingEngineTest {
         assertThat(buy.getStatus()).isEqualTo(OrderStatus.PENDING);
     }
 
+    @Test
+    @DisplayName("Orders without userId still match instead of being treated as SYSTEM")
+    void ordersWithoutUserId_canMatch() {
+        Order sell = new Order.Builder()
+                .addTicker("SBER")
+                .addSide(Side.SELL)
+                .addPrice(new BigDecimal("100"))
+                .addQuantity(10)
+                .build();
+        Order buy = new Order.Builder()
+                .addTicker("SBER")
+                .addSide(Side.BUY)
+                .addPrice(new BigDecimal("100"))
+                .addQuantity(10)
+                .build();
+
+        engine.placeLimitOrder(sell);
+        List<TradeResult> trades = engine.placeLimitOrder(buy);
+
+        assertThat(trades).hasSize(1);
+        assertThat(buy.getStatus()).isEqualTo(OrderStatus.FILLED);
+    }
+
     // -------------------------------------------------------
     //  Cancel
     // -------------------------------------------------------
@@ -185,6 +239,14 @@ class MatchingEngineTest {
         return new Order.Builder()
                 .addUserId(userId).addTicker("SBER")
                 .addSide(side).addPrice(new BigDecimal(price)).addQuantity(qty)
+                .build();
+    }
+
+    private Order order(String userId, Side side, String price, int qty, String tif) {
+        return new Order.Builder()
+                .addUserId(userId).addTicker("SBER")
+                .addSide(side).addPrice(new BigDecimal(price)).addQuantity(qty)
+                .addTimeInForce(tif)
                 .build();
     }
 

@@ -55,6 +55,13 @@ public class MatchingEngine {
 
         int startQty     = incomingOrder.getQuantity();
         int remainingQty = startQty;
+        String tif = incomingOrder.getTimeInForce() == null ? "GTC" : incomingOrder.getTimeInForce();
+
+        if ("FOK".equalsIgnoreCase(tif) && !canFullyFill(incomingOrder, book)) {
+            incomingOrder.setStatus(OrderStatus.CANCELLED);
+            log.info("MatchingEngine[{}] order {} cancelled (FOK not fillable)", ticker, incomingOrder.getId());
+            return trades;
+        }
 
         if (incomingOrder.getSideOfOrder() == Side.BUY) {
             remainingQty = matchBuyOrder(incomingOrder, book, trades, remainingQty);
@@ -67,11 +74,16 @@ public class MatchingEngine {
             incomingOrder.setStatus(OrderStatus.FILLED);
             incomingOrder.setQuantity(0);
         } else {
-            if (remainingQty < startQty) {
+            if (remainingQty < startQty && !"IOC".equalsIgnoreCase(tif)) {
                 incomingOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
             }
+            if ("IOC".equalsIgnoreCase(tif)) {
+                incomingOrder.setStatus(OrderStatus.CANCELLED);
+            }
             incomingOrder.setQuantity(remainingQty);
-            book.addOrder(incomingOrder);   // rest goes into book
+            if (!"IOC".equalsIgnoreCase(tif) && !"FOK".equalsIgnoreCase(tif)) {
+                book.addOrder(incomingOrder);   // rest goes into book
+            }
         }
 
         log.info("MatchingEngine[{}] order {} → {} trades, remaining={}",
@@ -122,7 +134,7 @@ public class MatchingEngine {
             }
 
             // self-match prevention
-            if (resting.getUserId().equals(buy.getUserId())) {
+            if (isSelfMatch(buy, resting)) {
                 log.warn("Self-match prevented: user {} order {} vs {}",
                         buy.getUserId(), buy.getId(), resting.getId());
                 break;
@@ -186,7 +198,7 @@ public class MatchingEngine {
             }
 
             // self-match prevention
-            if (resting.getUserId().equals(sell.getUserId())) {
+            if (isSelfMatch(sell, resting)) {
                 log.warn("Self-match prevented: user {} order {} vs {}",
                         sell.getUserId(), sell.getId(), resting.getId());
                 break;
@@ -222,5 +234,42 @@ public class MatchingEngine {
             bestBid = book.getBestBid();
         }
         return remainingQty;
+    }
+
+    private boolean isSelfMatch(Order incoming, Order resting) {
+        String incomingUser = incoming.getUserId();
+        String restingUser = resting.getUserId();
+        return incomingUser != null && restingUser != null && incomingUser.equals(restingUser);
+    }
+
+    private boolean canFullyFill(Order incomingOrder, OrderBook book) {
+        int needed = incomingOrder.getQuantity();
+        String userId = incomingOrder.getUserId();
+
+        if (incomingOrder.getSideOfOrder() == Side.BUY) {
+            for (Map.Entry<BigDecimal, ArrayDeque<Order>> level : book.getAsks().entrySet()) {
+                if (level.getKey().compareTo(incomingOrder.getPrice()) > 0) break;
+                for (Order resting : level.getValue()) {
+                    if (userId != null && resting.getUserId() != null && userId.equals(resting.getUserId())) {
+                        return false;
+                    }
+                    needed -= resting.getQuantity();
+                    if (needed <= 0) return true;
+                }
+            }
+        } else {
+            for (Map.Entry<BigDecimal, ArrayDeque<Order>> level : book.getBids().entrySet()) {
+                if (level.getKey().compareTo(incomingOrder.getPrice()) < 0) break;
+                for (Order resting : level.getValue()) {
+                    if (userId != null && resting.getUserId() != null && userId.equals(resting.getUserId())) {
+                        return false;
+                    }
+                    needed -= resting.getQuantity();
+                    if (needed <= 0) return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

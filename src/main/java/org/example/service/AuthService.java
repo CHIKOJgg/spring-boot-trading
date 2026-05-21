@@ -26,6 +26,7 @@ public class AuthService {
     private final RoleRepository roleRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final TradingAccountRepository tradingAccountRepository;
+    private final BankAccountRepository bankAccountRepository;   // Bug fix #7
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
@@ -93,7 +94,7 @@ public class AuthService {
         // BUG FIX: new users had no trading account after registration, so the
         // portfolio dashboard was empty and placing orders failed immediately.
         // Automatically provision a default RUB trading account on every signup.
-        provisionDefaultTradingAccount(user);
+        provisionDefaultAccounts(user);
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(request.username());
         String accessToken  = jwtService.generateAccessToken(userDetails);
@@ -162,25 +163,34 @@ public class AuthService {
      * Provision a funded RUB trading account for a newly registered user
      * so they can start trading immediately without extra steps.
      */
-    private void provisionDefaultTradingAccount(UserEntity user) {
-        boolean alreadyHasAccount = tradingAccountRepository.existsByUserId(user.getId());
-        if (alreadyHasAccount) return;
+    private void provisionDefaultAccounts(UserEntity user) {
+        // ── Trading account ─────────────────────────────────────────────────
+        if (!tradingAccountRepository.existsByUserId(user.getId())) {
+            String tAcc = "T-" + java.util.UUID.randomUUID().toString()
+                    .replace("-","").substring(0,10).toUpperCase();
+            tradingAccountRepository.save(TradingAccountEntity.builder()
+                    .user(user).accountNumber(tAcc).currency("RUB")
+                    .cashBalance(BigDecimal.valueOf(1_000_000))
+                    .frozenBalance(BigDecimal.ZERO)
+                    .status("ACTIVE")
+                    .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())
+                    .build());
+        }
 
-        String accountNumber = "ACC-" + user.getId() + "-" +
-                System.currentTimeMillis() % 100000;
-
-        TradingAccountEntity account = TradingAccountEntity.builder()
-                .user(user)
-                .accountNumber(accountNumber)
-                .currency("RUB")
-                .cashBalance(BigDecimal.valueOf(1_000_000))   // 1 000 000 RUB demo funds
-                .frozenBalance(BigDecimal.ZERO)
-                .status("ACTIVE")
-                .createdAt(LocalDateTime.now())
-                .updatedAt(LocalDateTime.now())
-                .build();
-
-        tradingAccountRepository.save(account);
+        // BUG FIX #7: No bank account was created on registration.
+        // The "Fund Trading Account" flow requires a bank account as the source,
+        // so new users could not deposit or move funds without first manually
+        // opening a bank account — the UI for that is not obvious.
+        if (!bankAccountRepository.existsByUserId(user.getId())) {
+            String bAcc = "B-" + java.util.UUID.randomUUID().toString()
+                    .replace("-","").substring(0,10).toUpperCase();
+            bankAccountRepository.save(BankAccountEntity.builder()
+                    .user(user).accountNumber(bAcc).currency("RUB")
+                    .balance(BigDecimal.ZERO)
+                    .status("ACTIVE")
+                    .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())
+                    .build());
+        }
     }
 
     private String persistRefreshToken(UserEntity user, UserDetails userDetails) {

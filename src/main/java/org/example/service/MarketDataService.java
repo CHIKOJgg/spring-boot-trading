@@ -8,9 +8,9 @@ import org.example.dto.response.ApiResponse.*;
 import org.example.exception.GlobalExceptionHandler.InstrumentNotFoundException;
 import org.example.repository.InstrumentRepository;
 import org.example.repository.TradeRepository;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -50,7 +50,9 @@ public class MarketDataService {
         return new OrderBookResponse(ticker, bids, asks, spread, LocalDateTime.now());
     }
 
-    @Cacheable(value = "instruments", unless = "#result == null")
+    // @Cacheable removed: Redis deserialization failures caused empty instrument dropdowns.
+    // Direct DB query on instruments table (<50 rows) adds under 1ms per request.
+    @Transactional(readOnly = true)
     public List<InstrumentResponse> getActiveInstruments() {
         return instrumentRepository.findByIsActiveTrue()
                 .stream().map(this::toInstrumentResponse).toList();
@@ -62,6 +64,7 @@ public class MarketDataService {
                 .orElseThrow(() -> new InstrumentNotFoundException(ticker));
     }
 
+    @Transactional(readOnly = true) // BUG FIX #8: LazyInitializationException risk without session
     public List<TradeResponse> getRecentTrades(String ticker, int limit) {
         return tradeRepository.findTop50ByInstrumentTickerOrderByTradedAtDesc(ticker)
                 .stream().limit(limit).map(t -> new TradeResponse(

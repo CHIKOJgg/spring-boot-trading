@@ -19,4 +19,6 @@ public interface BankAccountRepository extends JpaRepository<BankAccountEntity, 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT b FROM BankAccountEntity b WHERE b.id = :id")
     Optional<BankAccountEntity> findByIdForUpdate(Long id);
+
+    boolean existsByUserId(Long userId); // Bug fix #7
 }

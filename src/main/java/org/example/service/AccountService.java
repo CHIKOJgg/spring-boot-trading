@@ -49,6 +49,7 @@ public class AccountService {
         return bankAccountRepo.findByUserId(user.getId()).stream().map(this::toBankResponse).toList();
     }
 
+    @Transactional(readOnly = true) // BUG FIX #3
     public BankAccountResponse getBankAccount(Long id, String username) {
         BankAccountEntity account = bankAccountRepo.findById(id)
                 .orElseThrow(() -> new AccountNotFoundException("Bank account not found: " + id));
@@ -110,12 +111,19 @@ public class AccountService {
 
     @Transactional
     public void transfer(String username, TransferRequest request) {
+        // BUG FIX #5a: self-transfer guard
+        if (request.fromAccountId().equals(request.toAccountId()))
+            throw new TradingException("Cannot transfer to the same account");
+
         BankAccountEntity from = bankAccountRepo.findByIdForUpdate(request.fromAccountId())
                 .orElseThrow(() -> new AccountNotFoundException("Source account not found"));
         BankAccountEntity to = bankAccountRepo.findByIdForUpdate(request.toAccountId())
                 .orElseThrow(() -> new AccountNotFoundException("Destination account not found"));
 
         ensureOwner(from.getUser().getUsername(), username);
+        // BUG FIX #5b: destination account ownership was never verified — any user
+        // could transfer funds to any other user's bank account by knowing the ID.
+        ensureOwner(to.getUser().getUsername(), username);
         checkAccountActive(from);
         checkAccountActive(to);
 
@@ -167,6 +175,7 @@ public class AccountService {
         return tradingAccountRepo.findByUserId(user.getId()).stream().map(this::toTradingResponse).toList();
     }
 
+    @Transactional(readOnly = true) // BUG FIX #3
     public TradingAccountResponse getTradingAccount(Long id, String username) {
         TradingAccountEntity account = tradingAccountRepo.findById(id)
                 .orElseThrow(() -> new AccountNotFoundException("Trading account not found: " + id));
@@ -237,7 +246,12 @@ public class AccountService {
     }
 
     private String generateAccountNumber(String prefix) {
-        return prefix + System.currentTimeMillis() % 10_000_000_000L;
+        // BUG FIX #6: System.currentTimeMillis() % 10_000_000_000L produced only
+        // a 10-digit suffix which repeated if two users registered within the same
+        // millisecond, violating the UNIQUE constraint on account_number.
+        // UUID hex gives 32 random chars — collision probability is negligible.
+        String uid = UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase();
+        return prefix + "-" + uid;
     }
 
     BankAccountResponse toBankResponse(BankAccountEntity a) {

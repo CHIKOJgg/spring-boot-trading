@@ -6,6 +6,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.lang.NonNull;
+import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -42,6 +44,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
                 UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+
+                // BUG FIX: previously only token expiry stopped locked/disabled users.
+                // A banned user with a valid unexpired JWT could still call every API.
+                // Now we check account status on EVERY request, not just at login.
+                if (!userDetails.isEnabled()) {
+                    logger.warn("Rejected request from disabled user: " + username);
+                    response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Account is disabled");
+                    return;
+                }
+                if (!userDetails.isAccountNonLocked()) {
+                    logger.warn("Rejected request from locked user: " + username);
+                    response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Account is locked");
+                    return;
+                }
 
                 if (jwtService.isTokenValid(jwt, userDetails)) {
                     var authToken = new UsernamePasswordAuthenticationToken(

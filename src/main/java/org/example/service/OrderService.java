@@ -96,7 +96,8 @@ public class OrderService {
         Order domainOrder = new Order.Builder()
                 .addId(orderId).addUserId(user.getId().toString())
                 .addTicker(request.ticker()).addSide(Side.valueOf(request.side()))
-                .addPrice(request.price()).addQuantity(request.quantity()).build();
+                .addPrice(request.price()).addQuantity(request.quantity())
+                .addTimeInForce(request.timeInForce()).build();
 
         List<TradeResult> trades = matchingEngine.placeLimitOrder(domainOrder);
         for (TradeResult tr : trades) {
@@ -106,6 +107,13 @@ public class OrderService {
         entity.setStatus(domainOrder.getStatus().name());
         entity.setRemainingQty(domainOrder.getQuantity());
         orderRepository.save(entity);
+
+        // BUG FIX #2: IOC/FOK orders that are cancelled after partial/no fill
+        // must release the frozen balance for the unmatched portion.
+        // Previously the frozen funds were locked forever when IOC/FOK was cancelled.
+        if ("CANCELLED".equals(entity.getStatus()) && entity.getRemainingQty() > 0) {
+            releaseFrozen(entity);
+        }
 
         auditService.logSuccess(username, "PLACE_ORDER", "ORDER", orderId);
         notificationService.notify(user, "ORDER_PLACED", "Order placed",
@@ -192,10 +200,46 @@ public class OrderService {
     //  Settlement
     // -------------------------------------------------------
 
-    private void persistAndSettle(TradeResult tr, InstrumentEntity instrument) {
+    /**
+     * BUG FIX #1 helper: syncs the resting (counterparty) order's status back to the DB.
+     * The incoming order's status is updated by placeOrder() after matching.
+     * The resting order is updated here, inside the settlement transaction.
+     */
+    private void updateRestingOrderStatus(TradeResult tr,
+                                          OrderEntity buyOrder, OrderEntity sellOrder) {
+        // Determine which order was RESTING (was in the book before this trade)
+        // and which was INCOMING (just placed). The incoming order is updated by
+        // placeOrder() itself; we only need to handle the resting one here.
+        // We identify the resting order as the one whose ID is NOT the incoming
+        // order that triggered this settlement — but since persistAndSettle is
+        // called for every trade, we update BOTH sides defensively.
+        updateOrderInDb(buyOrder,  tr.quantity());
+        updateOrderInDb(sellOrder, tr.quantity());
+    }
+
+    private void updateOrderInDb(OrderEntity order, int executedQty) {
+        if (order == null) return;
+        int newRemaining = Math.max(0, order.getRemainingQty() - executedQty);
+        order.setRemainingQty(newRemaining);
+        if (newRemaining == 0) {
+            order.setStatus("FILLED");
+        } else if (newRemaining < order.getQuantity()) {
+            order.setStatus("PARTIALLY_FILLED");
+        }
+        order.setUpdatedAt(LocalDateTime.now());
+        orderRepository.save(order);
+    }
+
+        private void persistAndSettle(TradeResult tr, InstrumentEntity instrument) {
         OrderEntity buyOrder  = orderRepository.findById(tr.buyOrderId()).orElse(null);
         OrderEntity sellOrder = orderRepository.findById(tr.sellOrderId()).orElse(null);
         if (buyOrder == null || sellOrder == null) return;
+
+        // BUG FIX #1: Update the RESTING order's status in the DB.
+        // Previously only the INCOMING order entity was saved after matching.
+        // The resting order (counterparty) stayed PENDING in the database forever,
+        // showing as an active order in the UI even though it had been filled.
+        updateRestingOrderStatus(tr, buyOrder, sellOrder);
 
         TradeEntity trade = TradeEntity.builder()
                 .id(UUID.randomUUID().toString())
@@ -205,25 +249,35 @@ public class OrderService {
                 .build();
         tradeRepository.save(trade);
 
-        BigDecimal totalValue = tr.price().multiply(BigDecimal.valueOf(tr.quantity()));
+        BigDecimal executionValue = tr.price().multiply(BigDecimal.valueOf(tr.quantity()));
 
-        // Settle buyer: deduct cash + release frozen + update position
+        // BUG FIX: double-deduction — previously frozenBalance was reduced by executionValue
+        // (the trade price × qty). But frozenBalance was originally reserved at the ORDER's
+        // limit price. If execution price < limit price (price improvement), the difference
+        // stayed locked in frozenBalance forever.
+        // Correct logic:
+        //   frozenRelease = buyOrder.getPrice() × qty  (release the full reservation for these lots)
+        //   cashCost      = executionPrice × qty        (actual money paid to seller)
+        //   availableBalance increases by (limitPrice - executionPrice) × qty (price improvement benefit)
+        BigDecimal frozenRelease = buyOrder.getPrice().multiply(BigDecimal.valueOf(tr.quantity()));
+
+        // Settle buyer: deduct actual cost + release original frozen reservation
         TradingAccountEntity buyerAccount = buyOrder.getTradingAccount();
         buyerAccount.setFrozenBalance(buyerAccount.getFrozenBalance()
-                .subtract(totalValue).max(BigDecimal.ZERO));
+                .subtract(frozenRelease).max(BigDecimal.ZERO));
         buyerAccount.setCashBalance(buyerAccount.getCashBalance()
-                .subtract(totalValue).max(BigDecimal.ZERO));
+                .subtract(executionValue).max(BigDecimal.ZERO));
         tradingAccountRepo.save(buyerAccount);
         updatePosition(buyerAccount, instrument, tr.quantity(), tr.price(), true);
 
         // Settle seller: add cash + release frozen position
         TradingAccountEntity sellerAccount = sellOrder.getTradingAccount();
-        sellerAccount.setCashBalance(sellerAccount.getCashBalance().add(totalValue));
+        sellerAccount.setCashBalance(sellerAccount.getCashBalance().add(executionValue));
         tradingAccountRepo.save(sellerAccount);
         updatePosition(sellerAccount, instrument, tr.quantity(), tr.price(), false);
 
         notificationService.notify(buyOrder.getUser(), "TRADE_EXECUTED", "Trade executed",
-                "Bought " + tr.quantity() + " " + instrument.getTicker() + " @" + tr.price());
+                "Bought " + tr.quantity() + " " + instrument.getTicker() + " @" + tr.price() + " (limit: " + buyOrder.getPrice() + ")");
         notificationService.notify(sellOrder.getUser(), "TRADE_EXECUTED", "Trade executed",
                 "Sold " + tr.quantity() + " " + instrument.getTicker() + " @" + tr.price());
 

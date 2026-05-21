@@ -158,12 +158,12 @@
 <div id="app" style="display:none">
   <nav class="navbar">
     <span class="logo">⚡ TradePlatform</span>
-    <button class="nav-btn active" onclick="showPage('dashboard')">Дашборд</button>
-    <button class="nav-btn" onclick="showPage('trading')">Торговля</button>
-    <button class="nav-btn" onclick="showPage('accounts')">Счета</button>
-    <button class="nav-btn" onclick="showPage('orders')">Заявки</button>
-    <button class="nav-btn" onclick="showPage('history')">История</button>
-    <button class="nav-btn" id="admin-nav" style="display:none" onclick="showPage('admin')">Админ</button>
+    <button class="nav-btn active" onclick="showPage('dashboard',this)">Дашборд</button>
+    <button class="nav-btn" onclick="showPage('trading',this)">Торговля</button>
+    <button class="nav-btn" onclick="showPage('accounts',this)">Счета</button>
+    <button class="nav-btn" onclick="showPage('orders',this)">Заявки</button>
+    <button class="nav-btn" onclick="showPage('history',this)">История</button>
+    <button class="nav-btn" id="admin-nav" style="display:none" onclick="showPage('admin',this)">Админ</button>
     <span class="nav-user" id="nav-user"></span>
     <button class="btn btn-outline btn-sm" onclick="doLogout()">Выйти</button>
   </nav>
@@ -217,8 +217,8 @@
               <button class="tab-btn"        id="sell-tab" onclick="setOrderSide('SELL')">🔴 Продать</button>
             </div>
             <div class="grid-2" style="gap:10px">
-              <div class="form-group"><label>Цена</label><input id="o-price" type="number" step="0.01" placeholder="0.00"></div>
-              <div class="form-group"><label>Количество</label><input id="o-qty" type="number" placeholder="0"></div>
+              <div class="form-group"><label>Цена</label><input id="o-price" type="number" step="0.01" min="0.0001" placeholder="0.00"></div>
+              <div class="form-group"><label>Количество</label><input id="o-qty" type="number" min="1" step="1" placeholder="1"></div>
             </div>
             <div class="form-group">
               <label>Срок действия</label>
@@ -344,6 +344,7 @@ let orderSide = 'BUY';
 let instruments = [];
 let bankAccounts = [];
 let tradingAccounts = [];
+let wsSubs = {};   // BUG FIX: track WebSocket subscriptions to avoid duplicates
 
 // -------------------------------------------------------
 //  Auth helpers
@@ -356,7 +357,12 @@ async function apiFetch(path, opts = {}) {
     headers: authHeader(),
     ...opts
   });
-  if (res.status === 401) { doLogout(); return null; }
+  if (res.status === 401) {
+    // BUG FIX #11: token expired or account locked — show message before logout
+    showToast('Сессия истекла', 'Пожалуйста, войдите снова');
+    setTimeout(doLogout, 1500);
+    return null;
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.message || 'Ошибка запроса');
   return data;
@@ -420,38 +426,55 @@ function doLogout() {
 // -------------------------------------------------------
 //  Navigation
 // -------------------------------------------------------
-function showPage(name) {
+function showPage(name, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   $('page-' + name).classList.add('active');
-  event.target.classList.add('active');
-  if (name === 'trading') { loadActiveOrders(); loadTradingOrderBook(); }
-  if (name === 'accounts') { loadAccounts(); }
-  if (name === 'orders')   { loadOrderHistory(); }
-  if (name === 'history')  { loadTradeHistory(); }
-  if (name === 'admin')    { loadAdminUsers(); loadAdminOrders(); loadAuditLogs(); }
+  if (btn) btn.classList.add('active');
+  // BUG FIX: dashboard was never reloaded when user navigated back — stale data shown.
+  if (name === 'dashboard') { loadDashboard(); }
+  if (name === 'trading')   { refreshInstruments().then(() => { loadTradingOrderBook(); loadActiveOrders(); }); }
+  if (name === 'accounts')  { loadAccounts(); }
+  if (name === 'orders')    { loadActiveOrders(); loadOrderHistory(); }
+  if (name === 'history')   { loadTradeHistory(); }
+  if (name === 'admin')     { loadAdminUsers(); loadAdminOrders(); loadAuditLogs(); }
 }
 
 // -------------------------------------------------------
 //  Init
 // -------------------------------------------------------
 async function initApp() {
-  instruments = await apiFetch('/api/market/instruments') || [];
-  const tickers = instruments.map(i => i.ticker);
-
-  // populate selects
-  ['ob-ticker', 'o-ticker'].forEach(id => {
-    $(id).innerHTML = tickers.map(t => `<option value="${t}">${t}</option>`).join('');
-  });
+  // FIX: wrap in try/catch so a Redis/network failure on instruments
+  // does not silently leave the dropdown empty for regular users.
+  await refreshInstruments();
 
   await loadAccounts();
   await loadDashboard();
   connectWebSocket();
   loadOrderBook();
 
-  // price/qty preview
   ['o-price', 'o-qty'].forEach(id =>
     $(id).addEventListener('input', updateOrderPreview));
+}
+
+// Loads instruments and populates every ticker select.
+// Called on init AND when navigating to the trading page so a
+// cache failure on first load is automatically recovered.
+async function refreshInstruments() {
+  try {
+    const data = await apiFetch('/api/market/instruments');
+    if (Array.isArray(data) && data.length > 0) {
+      instruments = data;
+    }
+  } catch(e) {
+    console.warn('Could not load instruments:', e.message);
+  }
+  const tickers = instruments.map(i => i.ticker);
+  ['ob-ticker', 'o-ticker'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.innerHTML = tickers.map(t => `<option value="${t}">${t}</option>`).join('');
+  });
 }
 
 // -------------------------------------------------------
@@ -560,8 +583,15 @@ async function placeOrder() {
   const quantity  = parseInt($('o-qty').value);
   const tif       = $('o-tif').value;
 
-  if (!accountId || !price || !quantity)
-    return showOrderAlert('Заполните все поля', false);
+  // FIX: validate ticker is selected; empty ticker caused server 422 "не должно быть пустым"
+  if (!ticker)
+    return showOrderAlert('Выберите инструмент из списка', false);
+  if (!accountId)
+    return showOrderAlert('Выберите торговый счёт', false);
+  if (!price || price <= 0)
+    return showOrderAlert('Укажите корректную цену', false);
+  if (!quantity || quantity <= 0)
+    return showOrderAlert('Укажите количество лотов', false);
 
   try {
     const order = await apiFetch('/api/orders', {
@@ -573,7 +603,15 @@ async function placeOrder() {
     loadTradingOrderBook();
     $('o-price').value = '';
     $('o-qty').value = '';
-  } catch(e) { showOrderAlert(e.message, false); }
+  } catch(e) {
+    const msg = e.message || 'Неизвестная ошибка';
+    // Self-match prevention returns Insufficient funds error with a specific message
+    if (msg.includes('Self-match') || msg.includes('self-match')) {
+      showOrderAlert('Нельзя торговать против собственных заявок. Выставьте заявку с другого аккаунта.', false);
+    } else {
+      showOrderAlert(msg, false);
+    }
+  }
 }
 
 function showOrderAlert(msg, ok) {
@@ -606,8 +644,16 @@ async function cancelOrder(orderId) {
     await apiFetch(`/api/orders/${orderId}`, { method: 'DELETE' });
     loadActiveOrders();
     loadTradingOrderBook();
+    loadDashboard();
   } catch(e) { alert(e.message); }
 }
+
+// Auto-refresh active orders every 4 seconds when on trading page
+setInterval(() => {
+  if ($('page-trading')?.classList.contains('active')) {
+    loadActiveOrders();
+  }
+}, 4000);
 
 // -------------------------------------------------------
 //  Order / Trade history
@@ -727,30 +773,38 @@ function showDepositForm(id) {
   `);
 }
 async function doDeposit(id) {
+  const amt = parseFloat($('dep-amt').value);
+  if (!amt || amt <= 0) return alert('Введите корректную сумму');
   try {
     await apiFetch('/api/accounts/bank/deposit', { method: 'POST',
-      body: JSON.stringify({ bankAccountId: id, amount: parseFloat($('dep-amt').value), description: $('dep-desc').value }) });
+      body: JSON.stringify({ bankAccountId: id, amount: amt, description: $('dep-desc').value }) });
     hideOpsCard(); loadAccounts(); loadDashboard();
   } catch(e) { alert(e.message); }
 }
 
 function showWithdrawForm(id) {
   showOpsCard('Снятие средств', `
-    <div class="form-group"><label>Сумма</label><input id="wd-amt" type="number" min="0.01" step="0.01"></div>
+    <div class="form-group"><label>Сумма</label><input id="wd-amt" type="number" min="0.01" step="0.01" placeholder="0.00"></div>
     <button class="btn btn-danger" onclick="doWithdraw(${id})">Снять</button>
   `);
 }
 async function doWithdraw(id) {
+  const amt = parseFloat($('wd-amt').value);
+  if (!amt || amt <= 0) return alert('Введите корректную сумму');
   try {
     await apiFetch('/api/accounts/bank/withdraw', { method: 'POST',
-      body: JSON.stringify({ bankAccountId: id, amount: parseFloat($('wd-amt').value) }) });
+      body: JSON.stringify({ bankAccountId: id, amount: amt }) });
     hideOpsCard(); loadAccounts(); loadDashboard();
   } catch(e) { alert(e.message); }
 }
 
 function showTransferForm(fromId) {
-  const opts = bankAccounts.filter(a => a.id !== fromId)
-    .map(a => `<option value="${a.id}">${a.accountNumber}</option>`).join('');
+  const otherAccounts = bankAccounts.filter(a => a.id !== fromId);
+  if (otherAccounts.length === 0) {
+    showOpsCard('Перевод средств', '<p class="text-muted" style="padding:12px 0">Нет других банковских счетов для перевода. Откройте ещё один счёт.</p><button class="btn btn-outline btn-sm" onclick="hideOpsCard()">Закрыть</button>');
+    return;
+  }
+  const opts = otherAccounts.map(a => `<option value="${a.id}">${a.accountNumber}</option>`).join('');
   showOpsCard('Перевод средств', `
     <div class="form-group"><label>Счёт назначения</label><select id="tr-to">${opts}</select></div>
     <div class="form-group"><label>Сумма</label><input id="tr-amt" type="number" min="0.01" step="0.01"></div>
@@ -766,8 +820,12 @@ async function doTransfer(fromId) {
 }
 
 function showFundForm(tradingId) {
-  const opts = bankAccounts.filter(a => a.status === 'ACTIVE')
-    .map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(a.balance)} ₽)</option>`).join('');
+  const activeBanks = bankAccounts.filter(a => a.status === 'ACTIVE');
+  if (activeBanks.length === 0) {
+    showOpsCard('Пополнение торгового счёта', '<p class="text-muted" style="padding:12px 0">Нет активных банковских счетов. Сначала пополните банковский счёт.</p><button class="btn btn-outline btn-sm" onclick="hideOpsCard()">Закрыть</button>');
+    return;
+  }
+  const opts = activeBanks.map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(a.balance)} ₽)</option>`).join('');
   showOpsCard('Пополнение торгового счёта', `
     <div class="form-group"><label>Банковский счёт</label><select id="fund-bank">${opts}</select></div>
     <div class="form-group"><label>Сумма</label><input id="fund-amt" type="number" min="0.01" step="0.01"></div>
@@ -891,6 +949,17 @@ async function loadAuditLogs() {
 // -------------------------------------------------------
 //  WebSocket
 // -------------------------------------------------------
+// BUG FIX #10: Notification badge was set once at login and never updated.
+// Poll for unread count every 30 seconds so the badge stays current after trades execute.
+setInterval(async () => {
+  try {
+    const data = await apiFetch('/api/users/notifications?page=0&size=5');
+    const unread = (data?.content || []).filter(n => !n.isRead).length;
+    const badge = document.$('notif-badge') || document.getElementById('notif-badge');
+    if (badge) badge.textContent = unread > 0 ? unread : '';
+  } catch(e) {}
+}, 30000);
+
 function connectWebSocket() {
   try {
     const sock = new SockJS('/ws');
@@ -913,7 +982,9 @@ function connectWebSocket() {
 
 function subscribeOrderBook(ticker) {
   if (!stompClient) return;
-  stompClient.subscribe(`/topic/orderbook/${ticker}`, msg => {
+  // BUG FIX: unsubscribe old order book before subscribing new ticker
+  if (wsSubs.orderbook) { try { wsSubs.orderbook.unsubscribe(); } catch(e){} }
+  wsSubs.orderbook = stompClient.subscribe(`/topic/orderbook/${ticker}`, msg => {
     const book = JSON.parse(msg.body);
     renderOrderBookFromData(book, 'ob-asks', 'ob-bids', 'ob-spread');
     renderOrderBookFromData(book, 't-ob-asks', 't-ob-bids', 't-ob-spread');
@@ -922,7 +993,9 @@ function subscribeOrderBook(ticker) {
 
 function subscribeTrades(ticker) {
   if (!stompClient) return;
-  stompClient.subscribe(`/topic/trades/${ticker}`, msg => {
+  // BUG FIX: unsubscribe old trades topic before subscribing new ticker
+  if (wsSubs.trades) { try { wsSubs.trades.unsubscribe(); } catch(e){} }
+  wsSubs.trades = stompClient.subscribe(`/topic/trades/${ticker}`, msg => {
     const t = JSON.parse(msg.body);
     const tbody = $('recent-trades-body');
     const row = document.createElement('tr');

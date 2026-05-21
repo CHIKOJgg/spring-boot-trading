@@ -16,6 +16,7 @@ public class Order {
     private BigDecimal price;
     private int quantity;
     private OrderStatus status;
+    private final String timeInForce;
     private final LocalDateTime createdAt;
 
     private Order(Builder builder) {
@@ -26,6 +27,7 @@ public class Order {
         this.price          = builder.price;
         this.quantity       = builder.quantity;
         this.status         = OrderStatus.PENDING;
+        this.timeInForce    = builder.timeInForce;
         this.createdAt      = LocalDateTime.now();
     }
 
@@ -36,6 +38,7 @@ public class Order {
     public BigDecimal getPrice()           { return price; }
     public int getQuantity()               { return quantity; }
     public OrderStatus getStatus()         { return status; }
+    public String getTimeInForce()         { return timeInForce; }
     public LocalDateTime getCreatedAt()    { return createdAt; }
 
     public void setQuantity(int quantity)       { this.quantity = quantity; }
@@ -43,11 +46,12 @@ public class Order {
 
     public static class Builder {
         private String id            = UUID.randomUUID().toString();
-        private String userId        = "SYSTEM";
+        private String userId        = null;
         private String instrumentTicker = "SBER";
         private Side   side          = Side.BUY;
         private BigDecimal price     = BigDecimal.valueOf(100 + (int)(Math.random() * 50));
         private int    quantity      = 1 + (int)(Math.random() * 100);
+        private String timeInForce   = "GTC";
 
         public Builder addId(String id)                        { this.id = id;               return this; }
         public Builder addUserId(String userId)                { this.userId = userId;       return this; }
@@ -55,13 +59,14 @@ public class Order {
         public Builder addSide(Side side)                      { this.side = side;           return this; }
         public Builder addPrice(BigDecimal price)              { this.price = price;         return this; }
         public Builder addQuantity(int quantity)               { this.quantity = quantity;   return this; }
+        public Builder addTimeInForce(String timeInForce)      { this.timeInForce = timeInForce; return this; }
 
         public Order build() { return new Order(this); }
     }
 
     @Override
     public String toString() {
-        return "Order{id='%s', side=%s, price=%s, qty=%d, status=%s}"
-                .formatted(id, sideOfOrder, price, quantity, status);
+        return "Order{id='%s', side=%s, price=%s, qty=%d, tif=%s, status=%s}"
+                .formatted(id, sideOfOrder, price, quantity, timeInForce, status);
     }
 }
