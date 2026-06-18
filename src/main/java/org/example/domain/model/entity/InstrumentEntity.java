@@ -26,7 +26,7 @@ public class InstrumentEntity {
 
     @Column(nullable = false, length = 10)
     @Builder.Default
-    private String currency = "RUB";
+    private String currency = "BYN";
 
     @Column(name = "lot_size", nullable = false)
     @Builder.Default

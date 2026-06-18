@@ -26,7 +26,7 @@ public class TradingAccountEntity {
 
     @Column(nullable = false, length = 10)
     @Builder.Default
-    private String currency = "RUB";
+    private String currency = "BYN";
 
     @Column(name = "cash_balance", nullable = false, precision = 20, scale = 4)
     @Builder.Default

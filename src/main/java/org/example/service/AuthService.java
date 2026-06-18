@@ -93,7 +93,7 @@ public class AuthService {
 
         // BUG FIX: new users had no trading account after registration, so the
         // portfolio dashboard was empty and placing orders failed immediately.
-        // Automatically provision a default RUB trading account on every signup.
+        // Automatically provision a default BYN trading account on every signup.
         provisionDefaultAccounts(user);
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(request.username());
@@ -160,7 +160,7 @@ public class AuthService {
     // -------------------------------------------------------
 
     /**
-     * Provision a funded RUB trading account for a newly registered user
+     * Provision a funded BYN trading account for a newly registered user
      * so they can start trading immediately without extra steps.
      */
     private void provisionDefaultAccounts(UserEntity user) {
@@ -169,7 +169,7 @@ public class AuthService {
             String tAcc = "T-" + java.util.UUID.randomUUID().toString()
                     .replace("-","").substring(0,10).toUpperCase();
             tradingAccountRepository.save(TradingAccountEntity.builder()
-                    .user(user).accountNumber(tAcc).currency("RUB")
+                    .user(user).accountNumber(tAcc).currency("BYN")
                     .cashBalance(BigDecimal.valueOf(1_000_000))
                     .frozenBalance(BigDecimal.ZERO)
                     .status("ACTIVE")
@@ -185,7 +185,7 @@ public class AuthService {
             String bAcc = "B-" + java.util.UUID.randomUUID().toString()
                     .replace("-","").substring(0,10).toUpperCase();
             bankAccountRepository.save(BankAccountEntity.builder()
-                    .user(user).accountNumber(bAcc).currency("RUB")
+                    .user(user).accountNumber(bAcc).currency("BYN")
                     .balance(BigDecimal.ZERO)
                     .status("ACTIVE")
                     .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now())

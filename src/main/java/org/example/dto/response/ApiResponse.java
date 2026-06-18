@@ -120,6 +120,35 @@ public class ApiResponse {
             Boolean isActive
     ) {}
 
+    public record ChartPointResponse(
+            LocalDateTime timestamp,
+            BigDecimal price,
+            Integer volume
+    ) {}
+
+    public record InstrumentChartResponse(
+            String ticker,
+            String name,
+            String instrumentType,
+            String currency,
+            BigDecimal openPrice,
+            BigDecimal closePrice,
+            BigDecimal highPrice,
+            BigDecimal lowPrice,
+            BigDecimal change,
+            BigDecimal changePercent,
+            List<ChartPointResponse> points,
+            LocalDateTime generatedAt
+    ) {}
+
+    public record CurrencyConversionResponse(
+            BigDecimal inputAmount,
+            String fromCurrency,
+            String toCurrency,
+            BigDecimal rate,
+            BigDecimal convertedAmount
+    ) {}
+
     public record NotificationResponse(
             Long id,
             String title,
@@ -173,5 +202,17 @@ public class ApiResponse {
             String details,
             String result,
             LocalDateTime createdAt
+    ) {}
+
+    public record DemoMarketPulseResponse(
+            String ticker,
+            BigDecimal lastPrice,
+            BigDecimal openPrice,
+            BigDecimal change,
+            BigDecimal changePercent,
+            BigDecimal high,
+            BigDecimal low,
+            BigDecimal volume,
+            LocalDateTime updatedAt
     ) {}
 }

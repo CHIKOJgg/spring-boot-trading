@@ -8,7 +8,7 @@ public class AccountRequest {
     public record CreateBankAccountRequest(
             @NotBlank @Size(max = 10) String currency
     ) {
-        public CreateBankAccountRequest { if (currency == null) currency = "RUB"; }
+        public CreateBankAccountRequest { if (currency == null) currency = "BYN"; }
     }
 
     public record DepositRequest(
@@ -33,7 +33,7 @@ public class AccountRequest {
     public record CreateTradingAccountRequest(
             @NotBlank @Size(max = 10) String currency
     ) {
-        public CreateTradingAccountRequest { if (currency == null) currency = "RUB"; }
+        public CreateTradingAccountRequest { if (currency == null) currency = "BYN"; }
     }
 
     public record FundTradingAccountRequest(

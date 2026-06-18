@@ -31,7 +31,7 @@ public class CashOperationEntity {
 
     @Column(nullable = false, length = 10)
     @Builder.Default
-    private String currency = "RUB";
+    private String currency = "BYN";
 
     @Column(nullable = false, length = 30)
     @Builder.Default

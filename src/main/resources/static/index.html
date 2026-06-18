@@ -1,3 +1,4 @@
+﻿<!DOCTYPE html>
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -193,6 +194,28 @@
               <tbody id="recent-trades-body"></tbody></table>
             </div>
           </div>
+          <div class="card" style="margin-top:18px">
+            <div class="section-header" style="margin-bottom:10px">
+              <h2>Price chart</h2>
+              <select id="chart-ticker" style="width:160px" onchange="loadInstrumentChart()"></select>
+            </div>
+            <div id="chart-summary" class="text-muted" style="margin-bottom:10px">Select an instrument to view its chart.</div>
+            <canvas id="price-chart" style="width:100%;height:280px;border:1px solid var(--border);border-radius:12px;background:linear-gradient(180deg, rgba(15,23,42,.96), rgba(2,6,23,.96))"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:18px">
+        <div class="section-header">
+          <h2>System Market Pulse</h2>
+          <span class="live-dot"></span>
+        </div>
+        <div id="demo-pulse" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px"></div>
+        <div style="margin-top:14px">
+          <div class="card-title" style="margin-bottom:8px">Demo trades</div>
+          <table>
+            <thead><tr><th>Ticker</th><th>Price</th><th>Qty</th><th>Time</th></tr></thead>
+            <tbody id="demo-trades-body"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -261,6 +284,43 @@
           </div>
           <div id="trading-accounts-list"></div>
         </div>
+      </div>
+      <div class="card" style="margin-top:18px">
+        <div class="section-header" style="margin-bottom:10px">
+          <h2>Портфель и доступные позиции</h2>
+          <button class="btn btn-outline btn-sm" onclick="loadPortfolioOverview()">↻ Обновить</button>
+        </div>
+        <div id="portfolio-overview" class="text-muted">Выберите торговый счет, чтобы увидеть позиции.</div>
+      </div>
+      <div class="card" style="margin-top:18px">
+        <div class="section-header" style="margin-bottom:10px">
+          <h2>Currency Converter</h2>
+          <span class="pill pill-blue">Fixed rates</span>
+        </div>
+        <div class="grid-3">
+          <div class="form-group">
+            <label>Amount</label>
+            <input id="fx-amount" type="number" min="0.01" step="0.01" value="100">
+          </div>
+          <div class="form-group">
+            <label>From</label>
+            <select id="fx-from">
+              <option>BYN</option>
+              <option>USD</option>
+              <option>EUR</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>To</label>
+            <select id="fx-to">
+              <option selected>BYN</option>
+              <option>USD</option>
+              <option>EUR</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="convertCurrency()">Convert</button>
+        <div id="fx-result" class="text-muted" style="margin-top:10px">BYN is the base currency.</div>
       </div>
       <!-- Operations -->
       <div class="card" id="ops-card" style="display:none">
@@ -344,6 +404,7 @@ let orderSide = 'BUY';
 let instruments = [];
 let bankAccounts = [];
 let tradingAccounts = [];
+let portfolioCache = {};
 let wsSubs = {};   // BUG FIX: track WebSocket subscriptions to avoid duplicates
 
 // -------------------------------------------------------
@@ -432,7 +493,7 @@ function showPage(name, btn) {
   $('page-' + name).classList.add('active');
   if (btn) btn.classList.add('active');
   // BUG FIX: dashboard was never reloaded when user navigated back — stale data shown.
-  if (name === 'dashboard') { loadDashboard(); }
+  if (name === 'dashboard') { loadDashboard(); loadDemoMarket(); loadInstrumentChart(); }
   if (name === 'trading')   { refreshInstruments().then(() => { loadTradingOrderBook(); loadActiveOrders(); }); }
   if (name === 'accounts')  { loadAccounts(); }
   if (name === 'orders')    { loadActiveOrders(); loadOrderHistory(); }
@@ -450,6 +511,7 @@ async function initApp() {
 
   await loadAccounts();
   await loadDashboard();
+  loadDemoMarket();
   connectWebSocket();
   loadOrderBook();
 
@@ -470,10 +532,16 @@ async function refreshInstruments() {
     console.warn('Could not load instruments:', e.message);
   }
   const tickers = instruments.map(i => i.ticker);
-  ['ob-ticker', 'o-ticker'].forEach(id => {
+  ['ob-ticker', 'o-ticker', 'chart-ticker'].forEach(id => {
     const el = $(id);
     if (!el) return;
+    const previous = el.value;
     el.innerHTML = tickers.map(t => `<option value="${t}">${t}</option>`).join('');
+    if (previous && tickers.includes(previous)) {
+      el.value = previous;
+    } else if (tickers.length) {
+      el.value = tickers[0];
+    }
   });
 }
 
@@ -487,18 +555,24 @@ async function loadDashboard() {
     apiFetch('/api/accounts/trading')
   ]);
 
-  const totalBank    = (bankList    || []).reduce((s, a) => s + parseFloat(a.balance || 0), 0);
-  const totalTrading = (tradingList || []).reduce((s, a) => s + parseFloat(a.cashBalance || 0), 0);
+  const totalBank    = (bankList    || []).reduce((s, a) => s + toByn(a.balance || 0, a.currency), 0);
+  const totalTrading = (tradingList || []).reduce((s, a) => s + toByn(a.cashBalance || 0, a.currency), 0);
   const activeCount  = (await apiFetch('/api/orders/active') || []).length;
 
   $('dash-stats').innerHTML = `
-    <div class="card"><div class="stat-val">${fmt(totalBank)} ₽</div><div class="stat-label">Баланс банк. счетов</div></div>
-    <div class="card"><div class="stat-val">${fmt(totalTrading)} ₽</div><div class="stat-label">Баланс торг. счетов</div></div>
+    <div class="card"><div class="stat-val">${fmt(totalBank)} BYN</div><div class="stat-label">Баланс банк. счетов</div></div>
+    <div class="card"><div class="stat-val">${fmt(totalTrading)} BYN</div><div class="stat-label">Баланс торг. счетов</div></div>
     <div class="card"><div class="stat-val">${activeCount}</div><div class="stat-label">Активных заявок</div></div>
   `;
 
   // recent trades for first ticker
   if (instruments.length) loadRecentTrades(instruments[0].ticker);
+  if ($('chart-ticker')?.value) {
+    loadInstrumentChart($('chart-ticker').value);
+  } else if (instruments.length) {
+    $('chart-ticker').value = instruments[0].ticker;
+    loadInstrumentChart(instruments[0].ticker);
+  }
 }
 
 async function loadRecentTrades(ticker) {
@@ -510,6 +584,125 @@ async function loadRecentTrades(ticker) {
       <td>${t.quantity}</td>
       <td class="text-muted">${fmtTime(t.tradedAt)}</td>
     </tr>`).join('');
+}
+
+async function loadInstrumentChart(ticker) {
+  const symbol = ticker || $('chart-ticker')?.value || instruments[0]?.ticker;
+  if (!symbol) return;
+
+  try {
+    const chart = await apiFetch(`/api/market/chart/${encodeURIComponent(symbol)}?points=60`);
+    if (!chart) return;
+
+    const canvas = $('price-chart');
+    if (!canvas) return;
+
+    $('chart-summary').textContent =
+      `${chart.name} ${chart.instrumentType ? '(' + chart.instrumentType + ')' : ''} ` +
+      `| Open ${fmtPrice(chart.openPrice)} BYN | High ${fmtPrice(chart.highPrice)} BYN | Low ${fmtPrice(chart.lowPrice)} BYN`;
+
+    drawPriceChart(canvas, chart);
+  } catch (e) {
+    $('chart-summary').textContent = 'Unable to load chart data.';
+  }
+}
+
+function drawPriceChart(canvas, chart) {
+  const points = Array.isArray(chart?.points) ? chart.points : [];
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 800;
+  const height = canvas.clientHeight || 280;
+
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const padding = { top: 24, right: 18, bottom: 32, left: 56 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+  ctx.fillRect(0, 0, width, height);
+
+  if (!points.length) {
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = '14px system-ui, sans-serif';
+    ctx.fillText('No chart data available', padding.left, height / 2);
+    return;
+  }
+
+  const prices = points.map(p => parseFloat(p.price || 0));
+  let min = Math.min(...prices);
+  let max = Math.max(...prices);
+  if (min === max) {
+    min *= 0.995;
+    max *= 1.005;
+  }
+  const spread = max - min || 1;
+
+  const xFor = index => padding.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+  const yFor = price => padding.top + (1 - ((price - min) / spread)) * plotHeight;
+
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padding.top + (plotHeight / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(width - padding.right, y);
+    ctx.stroke();
+  }
+
+  const gradient = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
+  gradient.addColorStop(0, 'rgba(74, 222, 128, 0.28)');
+  gradient.addColorStop(1, 'rgba(74, 222, 128, 0.02)');
+
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const x = xFor(index);
+    const y = yFor(parseFloat(point.price || 0));
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+
+  ctx.lineTo(xFor(points.length - 1), height - padding.bottom);
+  ctx.lineTo(xFor(0), height - padding.bottom);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const x = xFor(index);
+    const y = yFor(parseFloat(point.price || 0));
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#4ade80';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  const lastPoint = points[points.length - 1];
+  const lastX = xFor(points.length - 1);
+  const lastY = yFor(parseFloat(lastPoint.price || 0));
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#bbf7d0';
+  ctx.fill();
+  ctx.strokeStyle = '#16a34a';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '600 15px system-ui, sans-serif';
+  ctx.fillText(`Last ${fmtPrice(chart.closePrice)} BYN`, padding.left, 18);
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText(fmtPrice(min) + ' BYN', 10, padding.top + plotHeight - 4);
+  ctx.fillText(fmtPrice(max) + ' BYN', 10, padding.top + 12);
 }
 
 // -------------------------------------------------------
@@ -571,7 +764,7 @@ function updateOrderPreview() {
   const p = parseFloat($('o-price').value) || 0;
   const q = parseInt($('o-qty').value)     || 0;
   $('o-total-preview').textContent = p && q
-    ? `Итого: ${fmt(p * q)} ₽`
+    ? `Итого: ${fmt(p * q)} BYN`
     : '';
 }
 
@@ -655,6 +848,12 @@ setInterval(() => {
   }
 }, 4000);
 
+setInterval(() => {
+  if ($('page-dashboard')?.classList.contains('active')) {
+    loadDemoMarket();
+  }
+}, 3000);
+
 // -------------------------------------------------------
 //  Order / Trade history
 // -------------------------------------------------------
@@ -683,7 +882,7 @@ async function loadTradeHistory() {
       <td><b>${t.ticker}</b></td>
       <td>${fmtPrice(t.price)}</td>
       <td>${t.quantity}</td>
-      <td>${fmt(t.totalValue)} ₽</td>
+      <td>${fmt(t.totalValue)} BYN</td>
       <td class="text-green">${t.buyerUsername}</td>
       <td class="text-red">${t.sellerUsername}</td>
       <td class="text-muted">${fmtTime(t.tradedAt)}</td>
@@ -696,6 +895,7 @@ async function loadTradeHistory() {
 async function loadAccounts() {
   bankAccounts    = await apiFetch('/api/accounts/bank')    || [];
   tradingAccounts = await apiFetch('/api/accounts/trading') || [];
+  portfolioCache = {};
 
   $('bank-accounts-list').innerHTML = bankAccounts.map(a => `
     <div class="card">
@@ -731,14 +931,16 @@ async function loadAccounts() {
   // update o-account select
   $('o-account').innerHTML = tradingAccounts
     .filter(a => a.status === 'ACTIVE')
-    .map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(a.availableBalance)} ₽)</option>`)
+    .map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(toByn(a.availableBalance, a.currency))} BYN)</option>`)
     .join('') || '<option value="">— Нет торговых счетов —</option>';
+
+  await loadPortfolioOverview();
 }
 
 function openBankModal() {
   showOpsCard('Открыть банковский счёт', `
     <div class="form-group"><label>Валюта</label>
-      <select id="nb-currency"><option>RUB</option><option>USD</option><option>EUR</option></select>
+      <select id="nb-currency"><option>BYN</option><option>USD</option><option>EUR</option></select>
     </div>
     <button class="btn btn-primary" onclick="createBankAccount()">Открыть</button>
   `);
@@ -753,7 +955,7 @@ async function createBankAccount() {
 function openTradingModal() {
   showOpsCard('Открыть торговый счёт', `
     <div class="form-group"><label>Валюта</label>
-      <select id="nt-currency"><option>RUB</option></select>
+      <select id="nt-currency"><option>BYN</option></select>
     </div>
     <button class="btn btn-primary" onclick="createTradingAccount()">Открыть</button>
   `);
@@ -825,7 +1027,7 @@ function showFundForm(tradingId) {
     showOpsCard('Пополнение торгового счёта', '<p class="text-muted" style="padding:12px 0">Нет активных банковских счетов. Сначала пополните банковский счёт.</p><button class="btn btn-outline btn-sm" onclick="hideOpsCard()">Закрыть</button>');
     return;
   }
-  const opts = activeBanks.map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(a.balance)} ₽)</option>`).join('');
+  const opts = activeBanks.map(a => `<option value="${a.id}">${a.accountNumber} (${fmt(toByn(a.balance, a.currency))} BYN)</option>`).join('');
   showOpsCard('Пополнение торгового счёта', `
     <div class="form-group"><label>Банковский счёт</label><select id="fund-bank">${opts}</select></div>
     <div class="form-group"><label>Сумма</label><input id="fund-amt" type="number" min="0.01" step="0.01"></div>
@@ -859,6 +1061,7 @@ async function loadStatement(accountId) {
 
 async function loadPositions(accountId) {
   const positions = await apiFetch(`/api/orders/positions/${accountId}`) || [];
+  portfolioCache[accountId] = positions;
   showOpsCard('Позиции', `
     <table>
       <thead><tr><th>Тикер</th><th>Количество</th><th>Заморожено</th><th>Средняя цена</th></tr></thead>
@@ -867,11 +1070,119 @@ async function loadPositions(accountId) {
           <td><b>${p.ticker}</b></td>
           <td>${p.quantity}</td>
           <td class="text-muted">${p.frozenQuantity}</td>
-          <td>${p.avgCost ? fmtPrice(p.avgCost) + ' ₽' : '—'}</td>
+          <td>${p.avgCost ? fmtPrice(p.avgCost) + ' BYN' : '—'}</td>
         </tr>`).join('') || '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">Нет позиций</td></tr>'}</tbody>
     </table>
     <button class="btn btn-outline btn-sm" style="margin-top:10px" onclick="hideOpsCard()">Закрыть</button>
   `);
+}
+
+async function loadPortfolioOverview() {
+  if (!tradingAccounts || tradingAccounts.length === 0) {
+    $('portfolio-overview').innerHTML = '<div class="text-muted">Нет торговых счетов</div>';
+    return;
+  }
+
+  const activeAccounts = tradingAccounts.filter(a => a.status === 'ACTIVE');
+  if (activeAccounts.length === 0) {
+    $('portfolio-overview').innerHTML = '<div class="text-muted">Нет активных торговых счетов</div>';
+    return;
+  }
+
+  const sections = await Promise.all(activeAccounts.map(async account => {
+    const positions = portfolioCache[account.id] ?? (await apiFetch(`/api/orders/positions/${account.id}`) || []);
+    portfolioCache[account.id] = positions;
+
+    const holdings = positions.length
+      ? `
+        <table>
+          <thead><tr><th>Тикер</th><th>Кол-во</th><th>Доступно</th><th>Заморожено</th><th>Средняя цена</th></tr></thead>
+          <tbody>${positions.map(p => `
+            <tr>
+              <td><b>${p.ticker}</b></td>
+              <td>${p.quantity}</td>
+              <td>${p.availableQty}</td>
+              <td class="text-muted">${p.frozenQuantity}</td>
+              <td>${p.avgCost ? fmtPrice(p.avgCost) + ' BYN' : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`
+      : '<div class="text-muted" style="padding:8px 0">Нет открытых позиций</div>';
+
+    return `
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px">
+          <div>
+            <div style="font-weight:600">${account.accountNumber}</div>
+            <div class="text-muted" style="font-size:12px">Доступно для торговли: ${fmt(toByn(account.availableBalance, account.currency))} BYN</div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="loadPositions(${account.id})">Открыть в окне операций</button>
+        </div>
+        ${holdings}
+      </div>`;
+  }));
+
+  $('portfolio-overview').innerHTML = sections.join('');
+}
+
+async function loadDemoMarket() {
+  try {
+    const [pulse, trades] = await Promise.all([
+      apiFetch('/api/market/demo/pulse'),
+      apiFetch('/api/market/demo/trades?limit=8')
+    ]);
+
+    if (pulse) {
+      const up = (pulse.change || 0) >= 0;
+      $('demo-pulse').innerHTML = `
+        <div class="card">
+          <div class="text-muted" style="font-size:12px">Ticker</div>
+          <div style="font-weight:700;font-size:20px">${pulse.ticker}</div>
+        </div>
+        <div class="card">
+          <div class="text-muted" style="font-size:12px">Last price</div>
+          <div style="font-weight:700;font-size:20px">${fmtPrice(pulse.lastPrice)} BYN</div>
+        </div>
+        <div class="card">
+          <div class="text-muted" style="font-size:12px">Change</div>
+          <div style="font-weight:700;font-size:20px" class="${up ? 'text-green' : 'text-red'}">
+            ${up ? '+' : ''}${fmtPrice(pulse.change)} (${fmtPrice(pulse.changePercent)}%)
+          </div>
+        </div>
+        <div class="card">
+          <div class="text-muted" style="font-size:12px">Volume</div>
+          <div style="font-weight:700;font-size:20px">${fmt(pulse.volume)} BYN</div>
+        </div>
+      `;
+    }
+
+    $('demo-trades-body').innerHTML = (trades || []).map(t => `
+      <tr>
+        <td><b>${t.ticker}</b></td>
+        <td class="text-green">${fmtPrice(t.price)} BYN</td>
+        <td>${t.quantity}</td>
+        <td class="text-muted">${fmtTime(t.tradedAt)}</td>
+      </tr>`).join('') || '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">Demo market is warming up...</td></tr>';
+  } catch (e) {
+    $('demo-pulse').innerHTML = '<div class="text-muted">Unable to load demo pulse</div>';
+  }
+}
+
+async function convertCurrency() {
+  try {
+    const amount = parseFloat($('fx-amount').value || 0);
+    const from = $('fx-from').value;
+    const to = $('fx-to').value;
+    if (!amount || amount <= 0) {
+      $('fx-result').textContent = 'Enter a positive amount.';
+      return;
+    }
+    const result = await apiFetch(`/api/market/currency/convert?amount=${encodeURIComponent(amount)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+    if (!result) return;
+    $('fx-result').innerHTML = `${fmtPrice(result.inputAmount)} ${result.fromCurrency} = <b>${fmtPrice(result.convertedAmount)} ${result.toCurrency}</b> at rate ${fmtPrice(result.rate)}`;
+  } catch (e) {
+    $('fx-result').textContent = e.message || 'Conversion failed';
+  }
 }
 
 function showOpsCard(title, html) {
@@ -1046,6 +1357,19 @@ function showToast(title, msg) {
 // -------------------------------------------------------
 //  Formatters
 // -------------------------------------------------------
+const BASE_CURRENCY = 'BYN';
+const FX_TO_BYN = { BYN: 1, USD: 3.25, EUR: 3.55, RUB: 0.036 };
+
+function money(v, currency = BASE_CURRENCY) {
+  return `${fmt(v)} ${currency}`;
+}
+
+function toByn(amount, currency) {
+  const code = (currency || BASE_CURRENCY).toUpperCase();
+  const rate = FX_TO_BYN[code] ?? 1;
+  return parseFloat(amount || 0) * rate;
+}
+
 function fmt(v)      { return parseFloat(v||0).toLocaleString('ru-RU', {minimumFractionDigits:2,maximumFractionDigits:2}); }
 function fmtPrice(v) { return parseFloat(v||0).toLocaleString('ru-RU', {minimumFractionDigits:2,maximumFractionDigits:4}); }
 function fmtK(v)     {
@@ -1073,6 +1397,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   const oTicker = $('o-ticker');
   if (oTicker) oTicker.addEventListener('change', loadTradingOrderBook);
+  const chartTicker = $('chart-ticker');
+  if (chartTicker) chartTicker.addEventListener('change', () => loadInstrumentChart(chartTicker.value));
 });
 </script>
 </body>

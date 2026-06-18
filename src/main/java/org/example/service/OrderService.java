@@ -230,7 +230,7 @@ public class OrderService {
         orderRepository.save(order);
     }
 
-        private void persistAndSettle(TradeResult tr, InstrumentEntity instrument) {
+    private void persistAndSettle(TradeResult tr, InstrumentEntity instrument) {
         OrderEntity buyOrder  = orderRepository.findById(tr.buyOrderId()).orElse(null);
         OrderEntity sellOrder = orderRepository.findById(tr.sellOrderId()).orElse(null);
         if (buyOrder == null || sellOrder == null) return;
@@ -263,18 +263,26 @@ public class OrderService {
 
         // Settle buyer: deduct actual cost + release original frozen reservation
         TradingAccountEntity buyerAccount = buyOrder.getTradingAccount();
-        buyerAccount.setFrozenBalance(buyerAccount.getFrozenBalance()
-                .subtract(frozenRelease).max(BigDecimal.ZERO));
-        buyerAccount.setCashBalance(buyerAccount.getCashBalance()
-                .subtract(executionValue).max(BigDecimal.ZERO));
+        BigDecimal buyerBeforeTotal = buyerAccount.getCashBalance().add(buyerAccount.getFrozenBalance());
+        buyerAccount.setFrozenBalance(strictSubtract(
+                buyerAccount.getFrozenBalance(), frozenRelease,
+                "buyer frozen balance for trade " + tr.buyOrderId()));
+        buyerAccount.setCashBalance(strictSubtract(
+                buyerAccount.getCashBalance(), executionValue,
+                "buyer cash balance for trade " + tr.buyOrderId()));
         tradingAccountRepo.save(buyerAccount);
         updatePosition(buyerAccount, instrument, tr.quantity(), tr.price(), true);
+        verifyCashConservation(buyerBeforeTotal, buyerAccount, executionValue,
+                "buyer", tr.buyOrderId());
 
         // Settle seller: add cash + release frozen position
         TradingAccountEntity sellerAccount = sellOrder.getTradingAccount();
+        BigDecimal sellerBeforeCash = sellerAccount.getCashBalance();
         sellerAccount.setCashBalance(sellerAccount.getCashBalance().add(executionValue));
         tradingAccountRepo.save(sellerAccount);
         updatePosition(sellerAccount, instrument, tr.quantity(), tr.price(), false);
+        verifyCashIncrease(sellerBeforeCash, sellerAccount.getCashBalance(), executionValue,
+                "seller", tr.sellOrderId());
 
         notificationService.notify(buyOrder.getUser(), "TRADE_EXECUTED", "Trade executed",
                 "Bought " + tr.quantity() + " " + instrument.getTicker() + " @" + tr.price() + " (limit: " + buyOrder.getPrice() + ")");
@@ -309,8 +317,14 @@ public class OrderService {
                     : BigDecimal.ZERO);
             pos.setQuantity(newQty);
         } else {
+            if (pos.getQuantity() < qty) {
+                throw new TradingException("Position would go negative for instrument " + instrument.getTicker());
+            }
+            if (pos.getFrozenQuantity() < qty) {
+                throw new TradingException("Frozen position would go negative for instrument " + instrument.getTicker());
+            }
             pos.setQuantity(pos.getQuantity() - qty);
-            pos.setFrozenQuantity(Math.max(0, pos.getFrozenQuantity() - qty));
+            pos.setFrozenQuantity(pos.getFrozenQuantity() - qty);
         }
         pos.setUpdatedAt(LocalDateTime.now());
         positionRepo.save(pos);
@@ -323,17 +337,53 @@ public class OrderService {
         if ("BUY".equals(entity.getSide())) {
             BigDecimal release = entity.getPrice()
                     .multiply(BigDecimal.valueOf(entity.getRemainingQty()));
-            account.setFrozenBalance(account.getFrozenBalance()
-                    .subtract(release).max(BigDecimal.ZERO));
+            BigDecimal beforeTotal = account.getCashBalance().add(account.getFrozenBalance());
+            account.setFrozenBalance(strictSubtract(account.getFrozenBalance(), release,
+                    "buyer frozen balance for cancel " + entity.getId()));
+            verifyCashConservation(beforeTotal, account, BigDecimal.ZERO,
+                    "buyer", entity.getId());
         } else {
             positionRepo.findByTradingAccountIdAndInstrumentId(
                     account.getId(), entity.getInstrument().getId())
                 .ifPresent(p -> {
-                    p.setFrozenQuantity(Math.max(0, p.getFrozenQuantity() - entity.getRemainingQty()));
+                    if (p.getFrozenQuantity() < entity.getRemainingQty()) {
+                        throw new TradingException("Frozen position would go negative for instrument "
+                                + entity.getInstrument().getTicker());
+                    }
+                    p.setFrozenQuantity(p.getFrozenQuantity() - entity.getRemainingQty());
                     positionRepo.save(p);
                 });
         }
         tradingAccountRepo.save(account);
+    }
+
+    private BigDecimal strictSubtract(BigDecimal current, BigDecimal delta, String context) {
+        BigDecimal result = current.subtract(delta);
+        if (result.compareTo(BigDecimal.ZERO) < 0) {
+            throw new TradingException("Accounting invariant failed: " + context);
+        }
+        return result;
+    }
+
+    private void verifyCashConservation(BigDecimal beforeTotal, TradingAccountEntity account,
+                                        BigDecimal expectedDecrease, String actor, String orderId) {
+        BigDecimal afterTotal = account.getCashBalance().add(account.getFrozenBalance());
+        BigDecimal expectedAfter = beforeTotal.subtract(expectedDecrease);
+        if (afterTotal.compareTo(expectedAfter) != 0) {
+            throw new TradingException("Accounting invariant failed for " + actor
+                    + " account on order " + orderId + ": before=" + beforeTotal
+                    + ", after=" + afterTotal + ", expected=" + expectedAfter);
+        }
+    }
+
+    private void verifyCashIncrease(BigDecimal beforeCash, BigDecimal afterCash,
+                                    BigDecimal expectedIncrease, String actor, String orderId) {
+        BigDecimal expectedAfter = beforeCash.add(expectedIncrease);
+        if (afterCash.compareTo(expectedAfter) != 0) {
+            throw new TradingException("Accounting invariant failed for " + actor
+                    + " account on order " + orderId + ": before=" + beforeCash
+                    + ", after=" + afterCash + ", expected=" + expectedAfter);
+        }
     }
 
     private void broadcastOrderBook(String ticker) {
